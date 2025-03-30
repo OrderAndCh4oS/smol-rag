@@ -1,17 +1,12 @@
-# Todo: extract entities (for low-level and high-level)
-# Todo: extract entity relations (for low-level and high-level)
 # Todo: create embeddings for descriptions of the relations
 # Todo: dedupe entities and relations (against current data and cache)
 # Todo: create caches for embeddings/entities/relations (do not create new embeddings if hashes of strings match)
 # Todo: clean up any text, trim excess white space at end of text and between paragraphs
-# Todo: store entities/relations in networkx (allow various kg store managers)
-# Todo: store data in nano-vectordb (allow for various vector store managers)
 # Todo: implement naive/local/global/hybrid queries
 # Todo: implement delete doc
 # Todo: explore kag patterns/strategies
 import os
 import time
-from pprint import pprint
 
 import networkx as nx
 import numpy as np
