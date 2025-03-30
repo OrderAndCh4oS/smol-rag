@@ -1,5 +1,7 @@
 import os
 
+COMPLETION_MODEL = 'gpt-4o-mini'
+EMBEDDING_MODEL = 'text-embedding-3-small'
 
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(ROOT_DIR, "data")

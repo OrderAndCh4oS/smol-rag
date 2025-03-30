@@ -5,6 +5,11 @@ import pathlib
 import re
 from hashlib import md5
 
+import tiktoken
+
+from app.definitions import COMPLETION_MODEL
+
+tiktoken_encoders = {}
 
 def create_file_if_not_exists(file_path, default_content=""):
     if not os.path.exists(file_path):
@@ -103,6 +108,23 @@ def extract_json_from_text(content: str):
             return None
     return None
 
+def truncate_list_by_token_size(data_list, get_text_for_row, max_token_size=4000, model=COMPLETION_MODEL):
+    if max_token_size <= 0:
+        return []
+    tokens = 0
+    for i, data in enumerate(data_list):
+        tokens += len(get_encoded_tokens(get_text_for_row(data), model))
+        if tokens >= max_token_size:
+            return data_list[:i]
+
+    return data_list
+
+def get_encoded_tokens(text, model):
+    global tiktoken_encoders
+    if not model in tiktoken_encoders:
+        tiktoken_encoders[model] = tiktoken.encoding_for_model(model)
+
+    return tiktoken_encoders[model].encode(text)
 
 def is_float_regex(value):
     return bool(re.match(r"^[-+]?[0-9]*\.?[0-9]+$", value))

@@ -11,6 +11,7 @@
 # Todo: explore kag patterns/strategies
 import os
 import time
+from pprint import pprint
 
 import networkx as nx
 import numpy as np
@@ -28,7 +29,7 @@ from app.prompts import get_query_system_prompt, excerpt_summary_prompt, get_ext
 
 from app.utilities import get_json, remove_from_json, read_file, get_docs, make_hash, add_to_json, \
     create_file_if_not_exists, split_string_by_multi_markers, clean_str, extract_json_from_text, is_float_regex, \
-    delete_all_files
+    delete_all_files, truncate_list_by_token_size
 
 dim = 1536
 embeddings_db = NanoVectorDB(dim, storage_file=EMBEDDINGS_DB)
@@ -268,26 +269,27 @@ def kg_query(text):
     prompt = get_high_low_level_keywords_prompt(text)
     result = get_completion(prompt)
     keyword_data = extract_json_from_text(result)
-    logger.info(keyword_data)
+    logger.info(f'keyword_data: {keyword_data}')
 
     ll_keywords = keyword_data.get("low_level_keywords", [])
-    logger.info(ll_keywords)
+    logger.info(f'll_keywords: {ll_keywords}')
     if len(ll_keywords):
         ll_embedding = get_embedding(ll_keywords)
         ll_embedding_array = np.array(ll_embedding)
-        ll_results = entities_db.query(query=ll_embedding_array, top_k=5, better_than_threshold=0.02)
-        logger.info(ll_results)
+        ll_results = entities_db.query(query=ll_embedding_array, top_k=25, better_than_threshold=0.02)
+        logger.info(f'll_results: {ll_results}')
     graph = nx.read_graphml(KG_DB)
     ll_data = [graph.nodes.get(r["__entity_name__"]) for r in ll_results]
     ll_degrees = [graph.degree(r["__entity_name__"]) for r in ll_results]
-    logger.info(ll_degrees)
-    logger.info(ll_data)
+    logger.info(f'll_degrees: {ll_degrees}')
+    logger.info(f'll_data: {ll_data}')
     ll_dataset = [
         {**n, "entity_name": k["__entity_name__"], "rank": d}
         for k, n, d in zip(ll_results, ll_data, ll_degrees)
     ]
-    logger.info(ll_dataset)
-    sort_kg_data_set_by_relation_size(graph, ll_dataset)
+    logger.info(f'll_dataset: {ll_dataset}')
+    entity_excerpts = get_most_related_excerpts(graph, ll_dataset)
+    logger.info(f'entity_excerpts {entity_excerpts}')
 
     # # Todo: remove duplication of functionality here
     # hl_keywords = keyword_data.get("high_level_keywords", [])
@@ -295,7 +297,7 @@ def kg_query(text):
     # if len(hl_keywords):
     #     hl_embedding = get_embedding(hl_keywords)
     #     hl_embedding_array = np.array(hl_embedding)
-    #     hl_results = entities_db.query(query=hl_embedding_array, top_k=5, better_than_threshold=0.02)
+    #     hl_results = entities_db.query(query=hl_embedding_array, top_k=25, better_than_threshold=0.02)
     #     print(hl_results)
     # hl_data = [graph.nodes.get(r["__entity_name__"]) for r in hl_results]
     # hl_degrees = [graph.degree(r["__entity_name__"]) for r in hl_results]
@@ -311,42 +313,99 @@ def kg_query(text):
     # Todo: get relations
 
 
-def sort_kg_data_set_by_relation_size(graph, kg_dataset):
-    excerpt_ids = [row["excerpt_id"] for row in kg_dataset]
-    logger.info(excerpt_ids)
-    # Todo: create set of excerpt ids
-    # Todo: edges for each node in data set by entity name
-    edges = [graph.edges(row["entity_name"]) for row in kg_dataset]
-    logger.info(edges)
+def get_most_related_excerpts(graph, kg_dataset):
+    excerpt_db = get_json(EXCERPT_DB)
+
+    excerpt_ids = [split_string_by_multi_markers(row["excerpt_id"], KG_SEP) for row in kg_dataset]
+    logger.info(f'excerpt_ids: {excerpt_ids}')
+    all_node_edges = [graph.edges(row["entity_name"]) for row in kg_dataset]
+    logger.info(f'edges: {all_node_edges}')
     sibling_node_names = set()
-    for edge in edges:
+    for edge in all_node_edges:
         if not edge:
             continue
         sibling_node_names.update([e[1] for e in edge])
-    logger.info(sibling_node_names)
+    logger.info(f'sibling_node_names: {sibling_node_names}')
     sibling_nodes = [graph.nodes.get(name) for name in list(sibling_node_names)]
-    logger.info(sibling_nodes)
+    logger.info(f'sibling_nodes: {sibling_nodes}')
+    sibling_text_units_lookup = {
+        k: set(split_string_by_multi_markers(v["excerpt_id"], [KG_SEP]))
+        for k, v in zip(sibling_node_names, sibling_nodes)
+        if v is not None and "excerpt_id" in v  # Add source_id check
+    }
+    logger.info(f'sibling_text_units: {sibling_text_units_lookup}')
+    all_excerpts_lookup = {}
+    for index, (excerpt_ids, node_edges) in enumerate(zip(excerpt_ids, all_node_edges)):
+        logger.info(f'excerpt_ids: {excerpt_ids}, node_edges: {node_edges}')
+        for excerpt_id in excerpt_ids:
+            if excerpt_id in all_excerpts_lookup:
+                continue
+            relation_counts = 0
+            if node_edges:
+                for e in node_edges:
+                    if (
+                        e[1] in sibling_text_units_lookup
+                        and excerpt_id in sibling_text_units_lookup[e[1]]
+                    ):
+                        relation_counts += 1
+            logger.info(f'excerpt_id: {excerpt_id}')
+            excerpt = excerpt_db.get(excerpt_id)
+            logger.info(f'excerpt: {excerpt}')
+            if excerpt is not None and "excerpt" in excerpt:
+                all_excerpts_lookup[excerpt_id] = {
+                    "data": excerpt,
+                    "order": index,
+                    "relation_counts": relation_counts,
+                }
+    logger.info(f'all_excerpts_lookup: {all_excerpts_lookup}')
+
+    all_excerpts = [
+        {"id": k, **v}
+        for k, v in all_excerpts_lookup.items()
+        if v is not None and v.get("data") is not None and "excerpt" in v["data"]
+    ]
+
+    logger.info(f'all_excerpts: {all_excerpts}')
+    logger.info(f'len_all_excerpts: {len(all_excerpts)}')
+
+    if not all_excerpts:
+        logger.warning("No valid excerpts found")
+        return []
+
+    all_excerpts = sorted(all_excerpts, key=lambda x: (x["order"], -x["relation_counts"]))
+    all_excerpts = [t["data"] for t in all_excerpts]
+
+    all_excerpts = truncate_list_by_token_size(
+        all_excerpts,
+        get_text_for_row=lambda x: x["excerpt"],
+        max_token_size=4000,
+    )
+
+    logger.info(f'len_all_excerpts: {len(all_excerpts)}')
+    logger.info(f'final_all_excerpts: {all_excerpts}')
+
+    return all_excerpts
 
 
 if __name__ == '__main__':
     set_logger("main.log")
 
-    delete_all_files(DATA_DIR)
-    delete_all_files(LOG_DIR)
-
-    create_file_if_not_exists(SOURCE_TO_DOC_ID_MAP, "{}")
-    create_file_if_not_exists(DOC_ID_TO_SOURCE_MAP, "{}")
-    create_file_if_not_exists(DOC_ID_TO_EXCERPT_IDS, "{}")
-    create_file_if_not_exists(EXCERPT_DB, "{}")
-    create_file_if_not_exists(QUERY_CACHE, "{}")
-    create_file_if_not_exists(EMBEDDING_CACHE, "{}")
-
-    import_documents()
+    # delete_all_files(DATA_DIR)
+    # delete_all_files(LOG_DIR)
+    #
+    # create_file_if_not_exists(SOURCE_TO_DOC_ID_MAP, "{}")
+    # create_file_if_not_exists(DOC_ID_TO_SOURCE_MAP, "{}")
+    # create_file_if_not_exists(DOC_ID_TO_EXCERPT_IDS, "{}")
+    # create_file_if_not_exists(EXCERPT_DB, "{}")
+    # create_file_if_not_exists(QUERY_CACHE, "{}")
+    # create_file_if_not_exists(EMBEDDING_CACHE, "{}")
+    #
+    # import_documents()
 
     # print(query("what do rabbits eat?"))  # Should answer
     # print(query("what do cats eat?"))  # Should reject
 
-    # kg_query("what do rabbits eat?")  # Should answer
+    kg_query("what do rabbits eat?")  # Should answer
 
     # remove_document_by_id("doc_4c3f8100da0b90c1a44c94e6b4ffa041")
 

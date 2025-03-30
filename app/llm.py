@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 from openai import OpenAI
 
 from app.logger import logger
-from app.definitions import QUERY_CACHE, EMBEDDING_CACHE
+from app.definitions import QUERY_CACHE, EMBEDDING_CACHE, COMPLETION_MODEL, EMBEDDING_MODEL
 from app.utilities import add_to_json, get_json, make_hash
 
 load_dotenv()
@@ -14,7 +14,7 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 query_cache = {}
 embedding_cache = {}
 
-def get_completion(query, model="gpt-4o-mini", context=""):
+def get_completion(query, model=COMPLETION_MODEL, context=""):
     # Todo write to and read from query cache
 
     global query_cache
@@ -43,7 +43,7 @@ def get_completion(query, model="gpt-4o-mini", context=""):
     return result
 
 
-def get_chat_completion(query, model="gpt-4o-mini", context="", chat_history=[]):
+def get_chat_completion(query, model=COMPLETION_MODEL, context="", chat_history=[]):
     # Todo: add cache for chat
     system_message = [{"role": "developer", "content": context}] if context else []
     messages = chat_history + [{"role": "user", "content": query}]
@@ -57,12 +57,13 @@ def get_chat_completion(query, model="gpt-4o-mini", context="", chat_history=[])
     return messages + [{"role": "assistant", "content": response.choices[0].message.content}]
 
 
-def get_embedding(content, model="text-embedding-3-small"):
+def get_embedding(content, model=EMBEDDING_MODEL):
     global embedding_cache
     if not embedding_cache:
         embedding_cache = get_json(EMBEDDING_CACHE)
 
-    content_hash = make_hash(content, 'emb-')
+    content_hash = make_hash(str(content), 'emb-')
+
     if content_hash in embedding_cache:
         logger.info(f"Embedding cache hit")
 
