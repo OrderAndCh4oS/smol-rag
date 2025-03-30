@@ -1,4 +1,4 @@
-# Mini RAG
+# Smol RAG
 
 This project ingests text documents, creates smart excerpts with concise summaries, and generates vector embeddings
 using the OpenAI API. The embeddings are stored in a local vector database to enable fast semantic querying.
