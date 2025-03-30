@@ -204,7 +204,6 @@ def extract_entities(content, doc_id):
                     existing_edge = graph.edges.get((source, target))
                     weight = float(weight) if is_float_regex(weight) else 1.0
                     if existing_edge:
-                        print('HAS EXISTING EDGE' + str(existing_edge))
                         existing_descriptions = split_string_by_multi_markers(existing_edge["description"], KG_SEP)
                         descriptions = KG_SEP.join(set(list(existing_descriptions) + [description]))
                         existing_keywords = split_string_by_multi_markers(existing_edge["keywords"], KG_SEP)
@@ -239,18 +238,6 @@ def extract_entities(content, doc_id):
     relationships_db.save()
 
     nx.write_graphml(graph, KG_DB)
-    # # --- Verification: Print the Graph Contents ---
-    # print("Nodes:")
-    # for node, data in graph.nodes(data=True):
-    #     print(f"{node}: {data}")
-    #
-    # print("\nEdges:")
-    # for src, tgt, data in graph.edges(data=True):
-    #     print(f"{src} -> {tgt}: {data}")
-    #
-    # if 'content_keywords' in graph.graph:
-    #     print("\nGraph Metadata:")
-    #     print("content_keywords:", graph.graph['content_keywords'])
 
 
 def query(text):
@@ -264,11 +251,13 @@ def query(text):
     return get_completion(text, context=system_prompt.strip(), use_cache=False)
 
 
-def kg_query(text):
+def hybrid_kg_query(text):
     prompt = get_high_low_level_keywords_prompt(text)
     result = get_completion(prompt)
     keyword_data = extract_json_from_text(result)
     logger.info(f'keyword_data: {keyword_data}')
+
+    graph = nx.read_graphml(KG_DB)
 
     ll_keywords = keyword_data.get("low_level_keywords", [])
     logger.info(f'll_keywords: {ll_keywords}')
@@ -277,7 +266,7 @@ def kg_query(text):
         ll_embedding_array = np.array(ll_embedding)
         ll_results = entities_db.query(query=ll_embedding_array, top_k=25, better_than_threshold=0.02)
         logger.info(f'll_results: {ll_results}')
-    graph = nx.read_graphml(KG_DB)
+
     ll_data = [graph.nodes.get(r["__entity_name__"]) for r in ll_results]
     ll_degrees = [graph.degree(r["__entity_name__"]) for r in ll_results]
     logger.info(f'll_degrees: {ll_degrees}')
@@ -287,40 +276,46 @@ def kg_query(text):
         for k, n, d in zip(ll_results, ll_data, ll_degrees)
     ]
     logger.info(f'll_dataset: {ll_dataset}')
-    ll_entity_excerpts = get_most_related_entity_excerpts(graph, ll_dataset)
+    ll_entity_excerpts = get_most_related_excerpts_for_entities(graph, ll_dataset)
     logger.info(f'll_entity_excerpts {ll_entity_excerpts}')
-    ll_relations = get_most_related_relations(graph, ll_dataset)
+    ll_relations = get_most_related_relationships_from_entities(graph, ll_dataset)
     logger.info(f'll_relations {ll_relations}')
 
-    # # Todo: remove duplication of functionality here
     hl_keywords = keyword_data.get("high_level_keywords", [])
     logger.info(f'hl_keywords: {hl_keywords}')
     if len(hl_keywords):
         hl_embedding = get_embedding(hl_keywords)
         hl_embedding_array = np.array(hl_embedding)
-        hl_results = entities_db.query(query=hl_embedding_array, top_k=25, better_than_threshold=0.02)
+        hl_results = relationships_db.query(query=hl_embedding_array, top_k=25, better_than_threshold=0.02)
         logger.info(f'hl_results: {hl_results}')
-    hl_data = [graph.nodes.get(r["__entity_name__"]) for r in hl_results]
-    hl_degrees = [graph.degree(r["__entity_name__"]) for r in hl_results]
+
+    # Note: __entity_name__ is not available on relationships_db data
+    hl_data = [graph.edges.get((r["__source__"], r["__target__"])) for r in hl_results]
+    hl_degrees = [graph.degree(r["__source__"]) + graph.degree(r["__target__"]) for r in hl_results]
     logger.info(f'hl_data: {hl_data}')
     logger.info(f'hl_degrees: {hl_degrees}')
-    hl_dataset = [
-        {**n, "entity_name": k["__entity_name__"], "rank": d}
-        for k, n, d in zip(hl_results, hl_data, hl_degrees)
-    ]
+    hl_dataset = []
+    for k, n, d in zip(hl_results, hl_data, hl_degrees):
+        hl_dataset.append({"src_tgt": (k["__source__"], k["__target__"]), "rank": d, **n, })
+    logger.info(hl_dataset)
+    hl_dataset = sorted(hl_dataset, key=lambda x: (x["rank"], x["weight"]), reverse=True)
+    hl_dataset = truncate_list_by_token_size(
+        hl_dataset,
+        get_text_for_row=lambda x: x["description"],
+        max_token_size=4000,
+    )
     logger.info(f'hl_dataset: {hl_dataset}')
-    hl_entity_excerpts = get_most_related_entity_excerpts(graph, hl_dataset)
+    hl_entity_excerpts = get_related_excerpts_for_relationships(hl_dataset)
     logger.info(f'hl_entity_excerpts {hl_entity_excerpts}')
-    hl_relations = get_most_related_relations(graph, hl_dataset)
-    logger.info(f'hl_relation_excerpts {hl_relations}')
+    hl_entities = get_related_entities_from_relationships(graph, hl_dataset)
+    logger.info(f'hl_relation_excerpts {hl_entities}')
 
-    dataset = ll_dataset + hl_dataset
-    relations = ll_relations + hl_relations
+    entities = ll_dataset + hl_entities
+    relations = ll_relations + hl_dataset
     excerpts = ll_entity_excerpts + hl_entity_excerpts
 
     entity_csv = [["entity", "type", "description", "rank"]]
-    for entity in dataset:
-        print('entity', entity)
+    for entity in entities:
         entity_csv.append(
             [
                 entity["entity_name"],
@@ -333,7 +328,6 @@ def kg_query(text):
 
     relation_csv = [["source", "target", "description", "keywords", "weight", "rank"]]
     for relation in relations:
-        print('relation', relation)
         relation_csv.append(
             [
                 relation["src_tgt"][0],
@@ -368,14 +362,10 @@ def kg_query(text):
 
     system_prompt = get_kg_query_system_prompt(context)
 
-    print(system_prompt)
-
     return get_completion(text, context=system_prompt.strip(), use_cache=False)
-    # Todo: get text units
-    # Todo: get relations
 
 
-def get_most_related_entity_excerpts(graph, kg_dataset):
+def get_most_related_excerpts_for_entities(graph, kg_dataset):
     excerpt_db = get_json(EXCERPT_DB)
 
     excerpt_ids = [split_string_by_multi_markers(row["excerpt_id"], KG_SEP) for row in kg_dataset]
@@ -447,7 +437,7 @@ def get_most_related_entity_excerpts(graph, kg_dataset):
     return all_excerpts
 
 
-def get_most_related_relations(graph, kg_dataset):
+def get_most_related_relationships_from_entities(graph, kg_dataset):
     node_edges_list = [graph.edges(row["entity_name"]) for row in kg_dataset]
     logger.info(f'node_edges_list: {node_edges_list}')
 
@@ -487,6 +477,70 @@ def get_most_related_relations(graph, kg_dataset):
     return edges_data
 
 
+def get_related_excerpts_for_relationships(kg_dataset):
+    excerpt_db = get_json(EXCERPT_DB)
+
+    excerpt_ids = [
+        split_string_by_multi_markers(dp["excerpt_id"], [KG_SEP])
+        for dp in kg_dataset
+    ]
+
+    all_excerpts_lookup = {}
+
+    for index, excerpt_ids in enumerate(excerpt_ids):
+        for excerpt_id in excerpt_ids:
+            if excerpt_id not in all_excerpts_lookup:
+                all_excerpts_lookup[excerpt_id] = {
+                    "data": excerpt_db.get(excerpt_id),
+                    "order": index,
+                }
+
+    if any([v is None for v in all_excerpts_lookup.values()]):
+        logger.warning("Text chunks are missing, maybe the storage is damaged")
+    all_excerpts = [
+        {"id": k, **v} for k, v in all_excerpts_lookup.items() if v is not None
+    ]
+    all_excerpts = sorted(all_excerpts, key=lambda x: x["order"])
+    all_excerpts = [t["data"] for t in all_excerpts]
+
+    all_excerpts = truncate_list_by_token_size(
+        all_excerpts,
+        get_text_for_row=lambda x: x["excerpt"],
+        max_token_size=4000,
+    )
+
+    return all_excerpts
+
+
+def get_related_entities_from_relationships(graph, kg_dataset):
+    entity_names = []
+    seen = set()
+
+    for e in kg_dataset:
+        if e["src_tgt"][0] not in seen:
+            entity_names.append(e["src_tgt"][0])
+            seen.add(e["src_tgt"][0])
+        if e["src_tgt"][1] not in seen:
+            entity_names.append(e["src_tgt"][1])
+            seen.add(e["src_tgt"][1])
+
+    data = [graph.nodes.get(entity_name) for entity_name in entity_names]
+    degrees = [graph.degree(entity_name) for entity_name in entity_names]
+
+    data = [
+        {**n, "entity_name": k, "rank": d}
+        for k, n, d in zip(entity_names, data, degrees)
+    ]
+
+    data = truncate_list_by_token_size(
+        data,
+        get_text_for_row=lambda x: x["description"],
+        max_token_size=4000,
+    )
+
+    return data
+
+
 if __name__ == '__main__':
     set_logger("main.log")
 
@@ -502,13 +556,13 @@ if __name__ == '__main__':
     #
     # import_documents()
 
-    print(query("what do rabbits eat?"))  # Should answer
-    print(query("what do cats eat?"))  # Should reject
-    print(query("What's the subject matter we can discuss?"))
+    # print(query("what do rabbits eat?"))  # Should answer
+    # print(query("what do cats eat?"))  # Should reject
+    # print(query("What's the subject matter we can discuss?"))
 
-    print(kg_query("what do rabbits eat?"))  # Should answer
-    print(kg_query("what do cows eat?"))  # Should reject
-    print(kg_query("What's the subject matter we can discuss?"))
+    # print(kg_query("what do rabbits eat?"))  # Should answer
+    # print(kg_query("what do cows eat?"))  # Should reject
+    # print(kg_query("What's the subject matter we can discuss?"))
 
     # remove_document_by_id("doc_4c3f8100da0b90c1a44c94e6b4ffa041")
 
