@@ -288,80 +288,84 @@ def kg_query(text):
         for k, n, d in zip(ll_results, ll_data, ll_degrees)
     ]
     logger.info(f'll_dataset: {ll_dataset}')
-    entity_excerpts = get_most_related_excerpts(graph, ll_dataset)
-    logger.info(f'entity_excerpts {entity_excerpts}')
+    entity_excerpts = get_most_related_entity_excerpts(graph, ll_dataset)
+    logger.info(f'll_entity_excerpts {entity_excerpts}')
+    relation_excerpts = get_most_related_relation_excerpts(graph, ll_dataset)
+    logger.info(f'll_relation_excerpts {relation_excerpts}')
 
     # # Todo: remove duplication of functionality here
-    # hl_keywords = keyword_data.get("high_level_keywords", [])
-    # print(hl_keywords)
-    # if len(hl_keywords):
-    #     hl_embedding = get_embedding(hl_keywords)
-    #     hl_embedding_array = np.array(hl_embedding)
-    #     hl_results = entities_db.query(query=hl_embedding_array, top_k=25, better_than_threshold=0.02)
-    #     print(hl_results)
-    # hl_data = [graph.nodes.get(r["__entity_name__"]) for r in hl_results]
-    # hl_degrees = [graph.degree(r["__entity_name__"]) for r in hl_results]
-    # print(hl_data)
-    # print(hl_degrees)
-    # hl_dataset = [
-    #     {**n, "entity_name": k["__entity_name__"], "rank": d}
-    #     for k, n, d in zip(hl_results, hl_data, hl_degrees)
-    # ]
-    # print(hl_dataset)
+    hl_keywords = keyword_data.get("high_level_keywords", [])
+    logger.info(f'hl_keywords: {hl_keywords}')
+    if len(hl_keywords):
+        hl_embedding = get_embedding(hl_keywords)
+        hl_embedding_array = np.array(hl_embedding)
+        hl_results = entities_db.query(query=hl_embedding_array, top_k=25, better_than_threshold=0.02)
+        logger.info(f'hl_results: {hl_results}')
+    hl_data = [graph.nodes.get(r["__entity_name__"]) for r in hl_results]
+    hl_degrees = [graph.degree(r["__entity_name__"]) for r in hl_results]
+    logger.info(f'hl_data: {hl_data}')
+    logger.info(f'hl_degrees: {hl_degrees}')
+    hl_dataset = [
+        {**n, "entity_name": k["__entity_name__"], "rank": d}
+        for k, n, d in zip(hl_results, hl_data, hl_degrees)
+    ]
+    logger.info(f'hl_dataset: {hl_dataset}')
+    entity_excerpts = get_most_related_entity_excerpts(graph, hl_dataset)
+    logger.info(f'hl_entity_excerpts {entity_excerpts}')
+    relation_excerpts = get_most_related_relation_excerpts(graph, hl_dataset)
+    logger.info(f'hl_relation_excerpts {relation_excerpts}')
 
     # Todo: get text units
     # Todo: get relations
 
 
-def get_most_related_excerpts(graph, kg_dataset):
+def get_most_related_entity_excerpts(graph, kg_dataset):
     excerpt_db = get_json(EXCERPT_DB)
 
     excerpt_ids = [split_string_by_multi_markers(row["excerpt_id"], KG_SEP) for row in kg_dataset]
     logger.info(f'excerpt_ids: {excerpt_ids}')
-    all_node_edges = [graph.edges(row["entity_name"]) for row in kg_dataset]
-    logger.info(f'edges: {all_node_edges}')
-    sibling_node_names = set()
-    for edge in all_node_edges:
+    all_edges = [graph.edges(row["entity_name"]) for row in kg_dataset]
+    logger.info(f'edges: {all_edges}')
+    sibling_names = set()
+    for edge in all_edges:
         if not edge:
             continue
-        sibling_node_names.update([e[1] for e in edge])
-    logger.info(f'sibling_node_names: {sibling_node_names}')
-    sibling_nodes = [graph.nodes.get(name) for name in list(sibling_node_names)]
+        sibling_names.update([e[1] for e in edge])
+    logger.info(f'sibling_names: {sibling_names}')
+    sibling_nodes = [graph.nodes.get(name) for name in list(sibling_names)]
     logger.info(f'sibling_nodes: {sibling_nodes}')
-    sibling_text_units_lookup = {
+    sibling_excerpt_lookup = {
         k: set(split_string_by_multi_markers(v["excerpt_id"], [KG_SEP]))
-        for k, v in zip(sibling_node_names, sibling_nodes)
-        if v is not None and "excerpt_id" in v  # Add source_id check
+        for k, v in zip(sibling_names, sibling_nodes)
+        if v is not None and "excerpt_id" in v
     }
-    logger.info(f'sibling_text_units: {sibling_text_units_lookup}')
-    all_excerpts_lookup = {}
-    for index, (excerpt_ids, node_edges) in enumerate(zip(excerpt_ids, all_node_edges)):
-        logger.info(f'excerpt_ids: {excerpt_ids}, node_edges: {node_edges}')
+    logger.info(f'sibling_excerpt_lookup: {sibling_excerpt_lookup}')
+    all_excerpt_data_lookup = {}
+    for index, (excerpt_ids, edges) in enumerate(zip(excerpt_ids, all_edges)):
+        logger.info(f'excerpt_ids: {excerpt_ids}, edges: {edges}')
         for excerpt_id in excerpt_ids:
-            if excerpt_id in all_excerpts_lookup:
+            if excerpt_id in all_excerpt_data_lookup:
                 continue
             relation_counts = 0
-            if node_edges:
-                for e in node_edges:
-                    if (
-                        e[1] in sibling_text_units_lookup
-                        and excerpt_id in sibling_text_units_lookup[e[1]]
-                    ):
+            if edges:
+                for edge in edges:
+                    sibling_name = edge[1]
+                    if sibling_name in sibling_excerpt_lookup and excerpt_id in sibling_excerpt_lookup[sibling_name]:
                         relation_counts += 1
             logger.info(f'excerpt_id: {excerpt_id}')
-            excerpt = excerpt_db.get(excerpt_id)
-            logger.info(f'excerpt: {excerpt}')
-            if excerpt is not None and "excerpt" in excerpt:
-                all_excerpts_lookup[excerpt_id] = {
-                    "data": excerpt,
+            excerpt_data = excerpt_db.get(excerpt_id)
+            logger.info(f'excerpt: {excerpt_data}')
+            if excerpt_data is not None and "excerpt" in excerpt_data:
+                all_excerpt_data_lookup[excerpt_id] = {
+                    "data": excerpt_data,
                     "order": index,
                     "relation_counts": relation_counts,
                 }
-    logger.info(f'all_excerpts_lookup: {all_excerpts_lookup}')
+    logger.info(f'all_excerpts_lookup: {all_excerpt_data_lookup}')
 
     all_excerpts = [
         {"id": k, **v}
-        for k, v in all_excerpts_lookup.items()
+        for k, v in all_excerpt_data_lookup.items()
         if v is not None and v.get("data") is not None and "excerpt" in v["data"]
     ]
 
@@ -385,6 +389,46 @@ def get_most_related_excerpts(graph, kg_dataset):
     logger.info(f'final_all_excerpts: {all_excerpts}')
 
     return all_excerpts
+
+
+def get_most_related_relation_excerpts(graph, kg_dataset):
+    node_edges_list = [graph.edges(row["entity_name"]) for row in kg_dataset]
+    logger.info(f'node_edges_list: {node_edges_list}')
+
+    edges = []
+    seen = set()
+
+    for node_edges in node_edges_list:
+        for edge in node_edges:
+            sorted_edge = tuple(sorted(edge))
+            if sorted_edge not in seen:
+                seen.add(sorted_edge)
+                edges.append(sorted_edge)
+
+    logger.info(f'edges: {edges}')
+
+    edges_pack = [graph.edges.get((e[0], e[1])) for e in edges]
+    logger.info(f'edges_pack: {edges_pack}')
+
+    edges_degree = [graph.degree(e[0]) + graph.degree(e[1]) for e in edges]
+    logger.info(f'edges_degree: {edges_degree}')
+
+    edges_data = [
+        {"src_tgt": k, "rank": d, **v}
+        for k, v, d in zip(edges, edges_pack, edges_degree)
+        if v is not None
+    ]
+    logger.info(f'edges_data: {edges_data}')
+    edges_data = sorted(edges_data, key=lambda x: (x["rank"], x["weight"]), reverse=True)
+    logger.info(f'sorted_edges_data: {edges_data}')
+    edges_data = truncate_list_by_token_size(
+        edges_data,
+        get_text_for_row=lambda x: x["description"],
+        max_token_size=1000,
+    )
+    logger.info(f'final_edges_data: {edges_data}')
+
+    return edges_data
 
 
 if __name__ == '__main__':
