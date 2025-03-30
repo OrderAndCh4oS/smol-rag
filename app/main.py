@@ -21,7 +21,7 @@ from app.logger import logger, set_logger
 from app.definitions import INPUT_DOCS_DIR, SOURCE_TO_DOC_ID_MAP, DOC_ID_TO_SOURCE_MAP, EMBEDDINGS_DB, EXCERPT_DB, \
     DOC_ID_TO_EXCERPT_IDS, KG_DB, ENTITIES_DB, RELATIONSHIPS_DB, KG_SEP, TUPLE_SEP, REC_SEP, COMPLETE_TAG
 from app.prompts import get_query_system_prompt, excerpt_summary_prompt, get_extract_entities_prompt, \
-    get_high_low_level_keywords_prompt, get_kg_query_system_prompt
+    get_high_low_level_keywords_prompt, get_kg_query_system_prompt, get_mix_system_prompt
 
 from app.utilities import get_json, remove_from_json, read_file, get_docs, make_hash, add_to_json, \
     split_string_by_multi_markers, clean_str, extract_json_from_text, is_float_regex, truncate_list_by_token_size, \
@@ -242,13 +242,38 @@ def extract_entities(content, doc_id):
 
 def query(text):
     logger.info(f"Received Query:\n{text}")
+    excerpts = get_query_excerpts(text)
+    excerpt_context = get_excerpt_context(excerpts)
+    system_prompt = get_query_system_prompt(excerpt_context)
+
+    return get_completion(text, context=system_prompt.strip(), use_cache=False)
+
+
+def get_excerpt_context(excerpts):
+    context = ""
+    for i, excerpt in enumerate(excerpts):
+        context += inspect.cleandoc(f"""
+            ## Excerpt
+
+            {excerpt["excerpt"]}
+
+            ## Summary
+
+            {excerpt["summary"]} 
+        """)
+        context += "\n\n"
+
+    return context
+
+
+def get_query_excerpts(text):
     embedding = get_embedding(text)
     embedding_array = np.array(embedding)
     results = embeddings_db.query(query=embedding_array, top_k=5, better_than_threshold=0.02)
     excerpt_db = get_json(EXCERPT_DB)
-    system_prompt = get_query_system_prompt(excerpt_db, results)
-
-    return get_completion(text, context=system_prompt.strip(), use_cache=False)
+    excerpts = [excerpt_db[result["__id__"]] for result in results]
+    excerpts = truncate_list_by_token_size(excerpts, get_text_for_row=lambda x: x["excerpt"], max_token_size=4000)
+    return excerpts
 
 
 def hybrid_kg_query(text):
@@ -259,61 +284,86 @@ def hybrid_kg_query(text):
 
     graph = nx.read_graphml(KG_DB)
 
-    ll_keywords = keyword_data.get("low_level_keywords", [])
-    logger.info(f'll_keywords: {ll_keywords}')
-    if len(ll_keywords):
-        ll_embedding = get_embedding(ll_keywords)
-        ll_embedding_array = np.array(ll_embedding)
-        ll_results = entities_db.query(query=ll_embedding_array, top_k=25, better_than_threshold=0.02)
-        logger.info(f'll_results: {ll_results}')
-
-    ll_data = [graph.nodes.get(r["__entity_name__"]) for r in ll_results]
-    ll_degrees = [graph.degree(r["__entity_name__"]) for r in ll_results]
-    logger.info(f'll_degrees: {ll_degrees}')
-    logger.info(f'll_data: {ll_data}')
-    ll_dataset = [
-        {**n, "entity_name": k["__entity_name__"], "rank": d}
-        for k, n, d in zip(ll_results, ll_data, ll_degrees)
-    ]
-    logger.info(f'll_dataset: {ll_dataset}')
-    ll_entity_excerpts = get_most_related_excerpts_for_entities(graph, ll_dataset)
-    logger.info(f'll_entity_excerpts {ll_entity_excerpts}')
-    ll_relations = get_most_related_relationships_from_entities(graph, ll_dataset)
-    logger.info(f'll_relations {ll_relations}')
-
-    hl_keywords = keyword_data.get("high_level_keywords", [])
-    logger.info(f'hl_keywords: {hl_keywords}')
-    if len(hl_keywords):
-        hl_embedding = get_embedding(hl_keywords)
-        hl_embedding_array = np.array(hl_embedding)
-        hl_results = relationships_db.query(query=hl_embedding_array, top_k=25, better_than_threshold=0.02)
-        logger.info(f'hl_results: {hl_results}')
-
-    # Note: __entity_name__ is not available on relationships_db data
-    hl_data = [graph.edges.get((r["__source__"], r["__target__"])) for r in hl_results]
-    hl_degrees = [graph.degree(r["__source__"]) + graph.degree(r["__target__"]) for r in hl_results]
-    logger.info(f'hl_data: {hl_data}')
-    logger.info(f'hl_degrees: {hl_degrees}')
-    hl_dataset = []
-    for k, n, d in zip(hl_results, hl_data, hl_degrees):
-        hl_dataset.append({"src_tgt": (k["__source__"], k["__target__"]), "rank": d, **n, })
-    logger.info(hl_dataset)
-    hl_dataset = sorted(hl_dataset, key=lambda x: (x["rank"], x["weight"]), reverse=True)
-    hl_dataset = truncate_list_by_token_size(
-        hl_dataset,
-        get_text_for_row=lambda x: x["description"],
-        max_token_size=4000,
-    )
-    logger.info(f'hl_dataset: {hl_dataset}')
-    hl_entity_excerpts = get_related_excerpts_for_relationships(hl_dataset)
-    logger.info(f'hl_entity_excerpts {hl_entity_excerpts}')
-    hl_entities = get_related_entities_from_relationships(graph, hl_dataset)
-    logger.info(f'hl_relation_excerpts {hl_entities}')
+    ll_dataset, ll_entity_excerpts, ll_relations = get_low_level_dataset(graph, keyword_data)
+    hl_dataset, hl_entities, hl_entity_excerpts = get_high_level_dataset(graph, keyword_data)
 
     entities = ll_dataset + hl_entities
     relations = ll_relations + hl_dataset
     excerpts = ll_entity_excerpts + hl_entity_excerpts
 
+    context = get_kg_query_context(entities, excerpts, relations)
+
+    system_prompt = get_kg_query_system_prompt(context)
+
+    return get_completion(text, context=system_prompt.strip(), use_cache=False)
+
+
+def local_kg_query(text):
+    prompt = get_high_low_level_keywords_prompt(text)
+    result = get_completion(prompt)
+    keyword_data = extract_json_from_text(result)
+    logger.info(f'keyword_data: {keyword_data}')
+
+    graph = nx.read_graphml(KG_DB)
+
+    ll_dataset, ll_entity_excerpts, ll_relations = get_low_level_dataset(graph, keyword_data)
+
+    entities = ll_dataset
+    relations = ll_relations
+    excerpts = ll_entity_excerpts
+
+    context = get_kg_query_context(entities, excerpts, relations)
+    system_prompt = get_kg_query_system_prompt(context)
+
+    return get_completion(text, context=system_prompt.strip(), use_cache=False)
+
+
+def global_kg_query(text):
+    prompt = get_high_low_level_keywords_prompt(text)
+    result = get_completion(prompt)
+    keyword_data = extract_json_from_text(result)
+    logger.info(f'keyword_data: {keyword_data}')
+
+    graph = nx.read_graphml(KG_DB)
+
+    hl_dataset, hl_entities, hl_entity_excerpts = get_high_level_dataset(graph, keyword_data)
+
+    entities = hl_entities
+    relations = hl_dataset
+    excerpts = hl_entity_excerpts
+
+    context = get_kg_query_context(entities, excerpts, relations)
+    system_prompt = get_kg_query_system_prompt(context)
+
+    return get_completion(text, context=system_prompt.strip(), use_cache=False)
+
+
+def mix_query(text):
+    prompt = get_high_low_level_keywords_prompt(text)
+    result = get_completion(prompt)
+    keyword_data = extract_json_from_text(result)
+    logger.info(f'keyword_data: {keyword_data}')
+
+    graph = nx.read_graphml(KG_DB)
+
+    ll_dataset, ll_entity_excerpts, ll_relations = get_low_level_dataset(graph, keyword_data)
+    hl_dataset, hl_entities, hl_entity_excerpts = get_high_level_dataset(graph, keyword_data)
+
+    kg_entities = ll_dataset + hl_entities
+    kg_relations = ll_relations + hl_dataset
+    kg_excerpts = ll_entity_excerpts + hl_entity_excerpts
+
+    query_excerpts = get_query_excerpts(text)
+
+    kg_context = get_kg_query_context(kg_entities, kg_excerpts, kg_relations)
+    excerpt_context = get_excerpt_context(query_excerpts)
+
+    system_prompt = get_mix_system_prompt(excerpt_context, kg_context)
+
+    return get_completion(text, context=system_prompt.strip(), use_cache=False)
+
+
+def get_kg_query_context(entities, excerpts, relations):
     entity_csv = [["entity", "type", "description", "rank"]]
     for entity in entities:
         entity_csv.append(
@@ -325,7 +375,6 @@ def hybrid_kg_query(text):
             ]
         )
     entity_context = list_of_list_to_csv(entity_csv)
-
     relation_csv = [["source", "target", "description", "keywords", "weight", "rank"]]
     for relation in relations:
         relation_csv.append(
@@ -339,12 +388,10 @@ def hybrid_kg_query(text):
             ]
         )
     relations_context = list_of_list_to_csv(relation_csv)
-
     excerpt_csv = [["excerpt"]]
     for excerpt in excerpts:
         excerpt_csv.append([excerpt["excerpt"]])
     excerpt_context = list_of_list_to_csv(excerpt_csv)
-
     context = inspect.cleandoc(f"""
         -----Entities-----
         ```csv
@@ -360,12 +407,64 @@ def hybrid_kg_query(text):
         ```
     """)
 
-    system_prompt = get_kg_query_system_prompt(context)
-
-    return get_completion(text, context=system_prompt.strip(), use_cache=False)
+    return context
 
 
-def get_most_related_excerpts_for_entities(graph, kg_dataset):
+def get_high_level_dataset(graph, keyword_data):
+    hl_keywords = keyword_data.get("high_level_keywords", [])
+    logger.info(f'hl_keywords: {hl_keywords}')
+    if len(hl_keywords):
+        hl_embedding = get_embedding(hl_keywords)
+        hl_embedding_array = np.array(hl_embedding)
+        hl_results = relationships_db.query(query=hl_embedding_array, top_k=25, better_than_threshold=0.02)
+        logger.info(f'hl_results: {hl_results}')
+    hl_data = [graph.edges.get((r["__source__"], r["__target__"])) for r in hl_results]
+    hl_degrees = [graph.degree(r["__source__"]) + graph.degree(r["__target__"]) for r in hl_results]
+    logger.info(f'hl_data: {hl_data}')
+    logger.info(f'hl_degrees: {hl_degrees}')
+    hl_dataset = []
+    for k, n, d in zip(hl_results, hl_data, hl_degrees):
+        hl_dataset.append({"src_tgt": (k["__source__"], k["__target__"]), "rank": d, **n, })
+    logger.info(hl_dataset)
+    hl_dataset = sorted(hl_dataset, key=lambda x: (x["rank"], x["weight"]), reverse=True)
+    hl_dataset = truncate_list_by_token_size(
+        hl_dataset,
+        get_text_for_row=lambda x: x["description"],
+        max_token_size=4000,
+    )
+    logger.info(f'hl_dataset: {hl_dataset}')
+    hl_entity_excerpts = get_excerpts_for_relationships(hl_dataset)
+    logger.info(f'hl_entity_excerpts {hl_entity_excerpts}')
+    hl_entities = get_entities_from_relationships(graph, hl_dataset)
+    logger.info(f'hl_relation_excerpts {hl_entities}')
+    return hl_dataset, hl_entities, hl_entity_excerpts
+
+
+def get_low_level_dataset(graph, keyword_data):
+    ll_keywords = keyword_data.get("low_level_keywords", [])
+    logger.info(f'll_keywords: {ll_keywords}')
+    if len(ll_keywords):
+        ll_embedding = get_embedding(ll_keywords)
+        ll_embedding_array = np.array(ll_embedding)
+        ll_results = entities_db.query(query=ll_embedding_array, top_k=25, better_than_threshold=0.02)
+        logger.info(f'll_results: {ll_results}')
+    ll_data = [graph.nodes.get(r["__entity_name__"]) for r in ll_results]
+    ll_degrees = [graph.degree(r["__entity_name__"]) for r in ll_results]
+    logger.info(f'll_degrees: {ll_degrees}')
+    logger.info(f'll_data: {ll_data}')
+    ll_dataset = [
+        {**n, "entity_name": k["__entity_name__"], "rank": d}
+        for k, n, d in zip(ll_results, ll_data, ll_degrees)
+    ]
+    logger.info(f'll_dataset: {ll_dataset}')
+    ll_entity_excerpts = get_excerpts_for_entities(graph, ll_dataset)
+    logger.info(f'll_entity_excerpts {ll_entity_excerpts}')
+    ll_relations = get_relationships_from_entities(graph, ll_dataset)
+    logger.info(f'll_relations {ll_relations}')
+    return ll_dataset, ll_entity_excerpts, ll_relations
+
+
+def get_excerpts_for_entities(graph, kg_dataset):
     excerpt_db = get_json(EXCERPT_DB)
 
     excerpt_ids = [split_string_by_multi_markers(row["excerpt_id"], KG_SEP) for row in kg_dataset]
@@ -437,7 +536,7 @@ def get_most_related_excerpts_for_entities(graph, kg_dataset):
     return all_excerpts
 
 
-def get_most_related_relationships_from_entities(graph, kg_dataset):
+def get_relationships_from_entities(graph, kg_dataset):
     node_edges_list = [graph.edges(row["entity_name"]) for row in kg_dataset]
     logger.info(f'node_edges_list: {node_edges_list}')
 
@@ -477,7 +576,7 @@ def get_most_related_relationships_from_entities(graph, kg_dataset):
     return edges_data
 
 
-def get_related_excerpts_for_relationships(kg_dataset):
+def get_excerpts_for_relationships(kg_dataset):
     excerpt_db = get_json(EXCERPT_DB)
 
     excerpt_ids = [
@@ -512,7 +611,7 @@ def get_related_excerpts_for_relationships(kg_dataset):
     return all_excerpts
 
 
-def get_related_entities_from_relationships(graph, kg_dataset):
+def get_entities_from_relationships(graph, kg_dataset):
     entity_names = []
     seen = set()
 
@@ -563,6 +662,18 @@ if __name__ == '__main__':
     # print(kg_query("what do rabbits eat?"))  # Should answer
     # print(kg_query("what do cows eat?"))  # Should reject
     # print(kg_query("What's the subject matter we can discuss?"))
+
+    # print(local_kg_query("what do rabbits eat?"))  # Should answer
+    # print(local_kg_query("what do cows eat?"))  # Should reject
+    # print(local_kg_query("What's the subject matter we can discuss?"))
+
+    # print(global_kg_query("what do rabbits eat?"))  # Should answer
+    # print(global_kg_query("what do cows eat?"))  # Should reject
+    # print(global_kg_query("What's the subject matter we can discuss?"))
+
+    print(mix_query("what do rabbits eat?"))  # Should answer
+    # print(mix_query("what do cows eat?"))  # Should reject
+    # print(mix_query("What's the subject matter we can discuss?"))
 
     # remove_document_by_id("doc_4c3f8100da0b90c1a44c94e6b4ffa041")
 

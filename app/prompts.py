@@ -19,8 +19,8 @@ def excerpt_summary_prompt(content, excerpt):
     """)
 
 
-def get_query_system_prompt(excerpt_db, results):
-    system_prompt = inspect.cleandoc("""
+def get_query_system_prompt(excerpts):
+    system_prompt = inspect.cleandoc(f"""
         You are a professional assistant responsible for answering questions related the to following information in the sources. Each source will contain an excerpt which has been pulled from accurate source material and a summary which outlines the broader context from which the excerpt was taken.
 
         The excerpts are the source of truth, However, the summaries will contain additional contextual information that may have been lost when extracting the excerpt from the real-life document. Favour information from excerpts where possible.
@@ -32,23 +32,9 @@ def get_query_system_prompt(excerpt_db, results):
          - Use markdown formatting with appropriate section headings
          - Each section should focus on one main point or aspect of the answer
          - Use clear and descriptive section titles that reflect the content
+         
+         {excerpts}
     """)
-    system_prompt += "\n\n"
-
-    for i, result in enumerate(results):
-        excerpt_data = excerpt_db[result["__id__"]]
-        system_prompt += inspect.cleandoc(f"""
-            # Source {i + 1}.
-
-            ## Excerpt
-
-            {excerpt_data["excerpt"]}
-
-            ## Summary
-
-            {excerpt_data["summary"]} 
-        """)
-        system_prompt += "\n\n"
 
     return system_prompt
 
@@ -173,6 +159,7 @@ def get_extract_entities_prompt(content,
 
     return prompt.format(**context_base, input_text=content)
 
+
 def get_high_low_level_keywords_prompt(query):
     return inspect.cleandoc(f"""
         ---Role---
@@ -256,3 +243,34 @@ def get_kg_query_system_prompt(context):
         
         Add sections and commentary to the response as appropriate for the length and format. Style the response in markdown.
     """)
+
+
+def get_mix_system_prompt(query_context, kg_context):
+    system_prompt = inspect.cleandoc(f"""
+        You are a professional assistant responsible for answering questions related the to following information. Each source will contain an excerpt which has been pulled from accurate source material and a summary which outlines the broader context from which the excerpt was taken.
+
+        The excerpts are the source of truth, However, the summaries will contain additional contextual information that may have been lost when extracting the excerpt from the real-life document. Favour information from excerpts where possible.
+        
+        Further information can be found within the knowledge graph, these will provided detailed look at the entities and their relationships. It will contain low and high level themes that may help you piece together addition contextual information.
+
+        If you don't know the answer, just say so. Do not make anything up or include information where the supporting evidence is not provided.
+
+        Response parameters:
+         - Answers must be in en_GB english
+         - Use markdown formatting with appropriate section headings
+         - Each section should focus on one main point or aspect of the answer
+         - Use clear and descriptive section titles that reflect the content
+         - Aim to keep content around 2-4 paragraphs for conciseness
+         
+         ---Data Sources---
+        
+         2. Source Material Excerpts:
+         {query_context}
+
+         1. Knowledge Graph Data:
+         {kg_context}
+         
+         
+    """)
+
+    return system_prompt
