@@ -5,6 +5,7 @@
 # Todo: implement naive/local/global/hybrid queries
 # Todo: implement delete doc
 # Todo: explore kag patterns/strategies
+import inspect
 import os
 import time
 
@@ -16,15 +17,14 @@ from nano_vectordb import NanoVectorDB
 from app.llm import get_embedding, get_completion
 from app.logger import logger, set_logger
 
-from app.definitions import INPUT_DOCS_DIR, SOURCE_TO_DOC_ID_MAP, DOC_ID_TO_SOURCE_MAP, EMBEDDINGS_DB, \
-    EXCERPT_DB, DOC_ID_TO_EXCERPT_IDS, KG_DB, ENTITIES_DB, RELATIONSHIPS_DB, KG_SEP, TUPLE_SEP, REC_SEP, COMPLETE_TAG, \
-    QUERY_CACHE, EMBEDDING_CACHE, LOG_DIR, DATA_DIR
+from app.definitions import INPUT_DOCS_DIR, SOURCE_TO_DOC_ID_MAP, DOC_ID_TO_SOURCE_MAP, EMBEDDINGS_DB, EXCERPT_DB, \
+    DOC_ID_TO_EXCERPT_IDS, KG_DB, ENTITIES_DB, RELATIONSHIPS_DB, KG_SEP, TUPLE_SEP, REC_SEP, COMPLETE_TAG
 from app.prompts import get_query_system_prompt, excerpt_summary_prompt, get_extract_entities_prompt, \
-    get_high_low_level_keywords_prompt
+    get_high_low_level_keywords_prompt, get_kg_query_system_prompt
 
 from app.utilities import get_json, remove_from_json, read_file, get_docs, make_hash, add_to_json, \
-    create_file_if_not_exists, split_string_by_multi_markers, clean_str, extract_json_from_text, is_float_regex, \
-    delete_all_files, truncate_list_by_token_size
+    split_string_by_multi_markers, clean_str, extract_json_from_text, is_float_regex, truncate_list_by_token_size, \
+    list_of_list_to_csv, get_encoded_tokens
 
 dim = 1536
 embeddings_db = NanoVectorDB(dim, storage_file=EMBEDDINGS_DB)
@@ -197,7 +197,8 @@ def extract_entities(content, doc_id):
                 if len(fields) >= 6:
                     _, source, target, description, keywords, weight = fields[:6]
                     source, target = sorted([source, target])
-                    logger.info(f"Relationship - Source: {source}, Target: {target}, Description: {description}, Keywords: {keywords}, Weight: {weight}, Excerpt ID: {excerpt_id}")
+                    logger.info(
+                        f"Relationship - Source: {source}, Target: {target}, Description: {description}, Keywords: {keywords}, Weight: {weight}, Excerpt ID: {excerpt_id}")
                     # Todo: summarise descriptions with LLM query
                     existing_edge = graph.edges.get((source, target))
                     weight = float(weight) if is_float_regex(weight) else 1.0
@@ -210,9 +211,11 @@ def extract_entities(content, doc_id):
                         existing_excerpt_ids = split_string_by_multi_markers(existing_edge["excerpt_id"], KG_SEP)
                         excerpt_ids = KG_SEP.join(set(list(existing_excerpt_ids) + [excerpt_id]))
                         weight = sum([weight, existing_edge["weight"]])
-                        graph.add_edge(source, target, description=descriptions, keywords=keywords, weight=weight, excerpt_id=excerpt_ids)
+                        graph.add_edge(source, target, description=descriptions, keywords=keywords, weight=weight,
+                                       excerpt_id=excerpt_ids)
                     else:
-                        graph.add_edge(source, target, description=description, keywords=keywords, weight=weight, excerpt_id=excerpt_id)
+                        graph.add_edge(source, target, description=description, keywords=keywords, weight=weight,
+                                       excerpt_id=excerpt_id)
                     relationship_id = make_hash(f"{source}_{target}", prefix="ent-")
                     embedding_content = f"{keywords} {source} {target} {description}"
                     embedding_result = get_embedding(embedding_content)
@@ -283,10 +286,10 @@ def kg_query(text):
         for k, n, d in zip(ll_results, ll_data, ll_degrees)
     ]
     logger.info(f'll_dataset: {ll_dataset}')
-    entity_excerpts = get_most_related_entity_excerpts(graph, ll_dataset)
-    logger.info(f'll_entity_excerpts {entity_excerpts}')
-    relation_excerpts = get_most_related_relation_excerpts(graph, ll_dataset)
-    logger.info(f'll_relation_excerpts {relation_excerpts}')
+    ll_entity_excerpts = get_most_related_entity_excerpts(graph, ll_dataset)
+    logger.info(f'll_entity_excerpts {ll_entity_excerpts}')
+    ll_relations = get_most_related_relations(graph, ll_dataset)
+    logger.info(f'll_relations {ll_relations}')
 
     # # Todo: remove duplication of functionality here
     hl_keywords = keyword_data.get("high_level_keywords", [])
@@ -305,11 +308,63 @@ def kg_query(text):
         for k, n, d in zip(hl_results, hl_data, hl_degrees)
     ]
     logger.info(f'hl_dataset: {hl_dataset}')
-    entity_excerpts = get_most_related_entity_excerpts(graph, hl_dataset)
-    logger.info(f'hl_entity_excerpts {entity_excerpts}')
-    relation_excerpts = get_most_related_relation_excerpts(graph, hl_dataset)
-    logger.info(f'hl_relation_excerpts {relation_excerpts}')
+    hl_entity_excerpts = get_most_related_entity_excerpts(graph, hl_dataset)
+    logger.info(f'hl_entity_excerpts {hl_entity_excerpts}')
+    hl_relations = get_most_related_relations(graph, hl_dataset)
+    logger.info(f'hl_relation_excerpts {hl_relations}')
 
+    dataset = ll_dataset + hl_dataset
+    relations = ll_relations + hl_relations
+    excerpts = ll_entity_excerpts + hl_entity_excerpts
+
+    entity_csv = [["entity", "type", "description", "rank"]]
+    for entity in dataset:
+        print('entity', entity)
+        entity_csv.append(
+            [
+                entity["entity_name"],
+                entity.get("category", "UNKNOWN"),
+                entity.get("description", "UNKNOWN"),
+                entity["rank"],
+            ]
+        )
+    entity_context = list_of_list_to_csv(entity_csv)
+
+    relation_csv = [["source", "target", "description", "keywords", "weight", "rank"]]
+    for relation in relations:
+        print('relation', relation)
+        relation_csv.append(
+            [
+                relation["src_tgt"][0],
+                relation["src_tgt"][1],
+                relation["description"],
+                relation["keywords"],
+                relation["weight"],
+                relation["rank"],
+            ]
+        )
+    relations_context = list_of_list_to_csv(relation_csv)
+
+    excerpts = "\n".join([e["excerpt"] for e in excerpts])
+
+    context = inspect.cleandoc(f"""
+        -----Entities-----
+        ```csv
+        {entity_context}
+        ```
+        -----Relationships-----
+        ```csv
+        {relations_context}
+        ```
+        -----Excerpts-----
+        {excerpts}
+    """)
+
+    print(context)
+    print(len(get_encoded_tokens(context)))
+    system_prompt = get_kg_query_system_prompt(context)
+
+    return get_completion(text, context=system_prompt.strip())
     # Todo: get text units
     # Todo: get relations
 
@@ -386,7 +441,7 @@ def get_most_related_entity_excerpts(graph, kg_dataset):
     return all_excerpts
 
 
-def get_most_related_relation_excerpts(graph, kg_dataset):
+def get_most_related_relations(graph, kg_dataset):
     node_edges_list = [graph.edges(row["entity_name"]) for row in kg_dataset]
     logger.info(f'node_edges_list: {node_edges_list}')
 
@@ -444,7 +499,7 @@ if __name__ == '__main__':
     # print(query("what do rabbits eat?"))  # Should answer
     # print(query("what do cats eat?"))  # Should reject
 
-    kg_query("what do rabbits eat?")  # Should answer
+    print(kg_query("what do rabbits eat?"))  # Should answer
 
     # remove_document_by_id("doc_4c3f8100da0b90c1a44c94e6b4ffa041")
 

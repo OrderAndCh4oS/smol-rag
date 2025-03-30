@@ -1,9 +1,12 @@
+import csv
 import html
+import io
 import json
 import os
 import pathlib
 import re
 from hashlib import md5
+from typing import List
 
 import tiktoken
 
@@ -119,7 +122,7 @@ def truncate_list_by_token_size(data_list, get_text_for_row, max_token_size=4000
 
     return data_list
 
-def get_encoded_tokens(text, model):
+def get_encoded_tokens(text, model=COMPLETION_MODEL):
     global tiktoken_encoders
     if not model in tiktoken_encoders:
         tiktoken_encoders[model] = tiktoken.encoding_for_model(model)
@@ -128,3 +131,9 @@ def get_encoded_tokens(text, model):
 
 def is_float_regex(value):
     return bool(re.match(r"^[-+]?[0-9]*\.?[0-9]+$", value))
+
+def list_of_list_to_csv(data: List[List[str]]) -> str:
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerows(data)
+    return output.getvalue()
