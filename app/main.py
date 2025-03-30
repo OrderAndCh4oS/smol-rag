@@ -6,6 +6,7 @@
 # Todo: implement delete doc
 # Todo: explore kag patterns/strategies
 import inspect
+import logging
 import os
 import time
 
@@ -260,7 +261,7 @@ def query(text):
     excerpt_db = get_json(EXCERPT_DB)
     system_prompt = get_query_system_prompt(excerpt_db, results)
 
-    return get_completion(text, context=system_prompt.strip())
+    return get_completion(text, context=system_prompt.strip(), use_cache=False)
 
 
 def kg_query(text):
@@ -345,7 +346,10 @@ def kg_query(text):
         )
     relations_context = list_of_list_to_csv(relation_csv)
 
-    excerpts = "\n".join([e["excerpt"] for e in excerpts])
+    excerpt_csv = [["excerpt"]]
+    for excerpt in excerpts:
+        excerpt_csv.append([excerpt["excerpt"]])
+    excerpt_context = list_of_list_to_csv(excerpt_csv)
 
     context = inspect.cleandoc(f"""
         -----Entities-----
@@ -353,18 +357,20 @@ def kg_query(text):
         {entity_context}
         ```
         -----Relationships-----
-        ```csv
+       excerpts
         {relations_context}
         ```
         -----Excerpts-----
-        {excerpts}
+        ```csv
+        {excerpt_context}
+        ```
     """)
 
-    print(context)
-    print(len(get_encoded_tokens(context)))
     system_prompt = get_kg_query_system_prompt(context)
 
-    return get_completion(text, context=system_prompt.strip())
+    print(system_prompt)
+
+    return get_completion(text, context=system_prompt.strip(), use_cache=False)
     # Todo: get text units
     # Todo: get relations
 
@@ -496,10 +502,13 @@ if __name__ == '__main__':
     #
     # import_documents()
 
-    # print(query("what do rabbits eat?"))  # Should answer
-    # print(query("what do cats eat?"))  # Should reject
+    print(query("what do rabbits eat?"))  # Should answer
+    print(query("what do cats eat?"))  # Should reject
+    print(query("What's the subject matter we can discuss?"))
 
     print(kg_query("what do rabbits eat?"))  # Should answer
+    print(kg_query("what do cows eat?"))  # Should reject
+    print(kg_query("What's the subject matter we can discuss?"))
 
     # remove_document_by_id("doc_4c3f8100da0b90c1a44c94e6b4ffa041")
 

@@ -1,3 +1,4 @@
+import logging
 import os
 
 from dotenv import load_dotenv
@@ -9,12 +10,13 @@ from app.utilities import add_to_json, get_json, make_hash
 
 load_dotenv()
 
+logging.basicConfig(level=logging.DEBUG)
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 query_cache = {}
 embedding_cache = {}
 
-def get_completion(query, model=COMPLETION_MODEL, context=""):
+def get_completion(query, model=COMPLETION_MODEL, context="", use_cache=True):
     # Todo write to and read from query cache
 
     global query_cache
@@ -22,7 +24,7 @@ def get_completion(query, model=COMPLETION_MODEL, context=""):
         query_cache = get_json(QUERY_CACHE)
 
     query_hash = make_hash(query, 'qry-')
-    if query_hash in query_cache:
+    if use_cache and query_hash in query_cache:
         logger.info(f"query cache hit")
         data = query_cache[query_hash]
         result = data["result"]

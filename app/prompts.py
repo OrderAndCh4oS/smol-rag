@@ -235,14 +235,21 @@ def get_kg_query_system_prompt(context):
     return inspect.cleandoc(f"""
         ---Role---
 
-        You are a helpful assistant responding to questions about data in the tables provided.
+        You are a helpful assistant responding to questions about data in the tables provided. The provided data tables are your context and your source of truth.
         
         ---Goal---
         
-        Generate a response of the target length and format that responds to the user's question, summarizing all information in the input data tables appropriate for the response length and format, and incorporating any relevant general knowledge.
-        If you don't know the answer, just say so. Do not make anything up.
-        Do not include information where the supporting evidence for it is not provided.
+        Generate a response of the target length and format that responds to the user's question, summarizing all information in the input data tables appropriate for the response length and format.
+        If you don't know the answer, just say so. Do not make anything up or include information where the supporting evidence is not provided.
+
+        ---Response parameters---
         
+         - Answers must be in en_GB english
+         - Use markdown formatting with appropriate section headings
+         - Each section should focus on one main point or aspect of the answer
+         - Use clear and descriptive section titles that reflect the content
+         - You must not attempt to answer queries if the context does provide any supporting evidence
+         
         ---Data tables---
         
         {context}
