@@ -1,6 +1,6 @@
 # Smol RAG
 
-Smol RAG is a lightweight retrieval-augmented generation system heavily inspired by and borrowing code from LightRAG. It supports multiple query types and includes a robust pipeline for ingesting, embedding, and updating documents.
+Smol RAG is a lightweight retrieval-augmented generation system heavily inspired by LightRAG. It supports multiple query types and includes a robust pipeline for ingesting, embedding, and updating documents.
 
 ## Document Ingestion & Update Handling
 
@@ -11,11 +11,11 @@ The document ingestion process is central to the system. Documents are split int
   - Identical content isn't reprocessed.
   - Changes in the file will trigger a re-ingestion.
 
-- **Excerpting and Summarisation**  
+- **Excerpt and Summary**  
   Each document is split into overlapping chunks (~2000 characters), which are individually summarised to improve downstream context quality.
 
 - **Embeddings**  
-  Each excerpt + its summary is embedded using OpenAI’s embedding API and stored in NanoVectorDB.
+  Each excerpt and its summary are embedded using OpenAI’s embedding API and stored in NanoVectorDB.
 
 - **Entity & Relationship Extraction**  
   Each excerpt is analysed for structured entities and relationships. These are saved in a local knowledge graph using NetworkX and also embedded for similarity queries.
