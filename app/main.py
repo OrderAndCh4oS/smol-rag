@@ -96,7 +96,7 @@ def embed_document(content, doc_id):
     embeddings_db.save()
     add_to_json(DOC_ID_TO_EXCERPT_IDS, doc_id, excerpt_ids)
 
-
+# Todo: write smart chunking function to extract excerpts without chopping words
 def get_excerpts(content, n=2000, overlap=200):
     excerpts = []
     step = n - overlap
@@ -669,4 +669,4 @@ if __name__ == '__main__':
 
     # remove_document_by_id("doc_4c3f8100da0b90c1a44c94e6b4ffa041")
 
-    # Use Jaal graph visualisation to inspect knowledge graph
+    # Todo: Use Jaal graph visualisation to inspect knowledge graph
