@@ -2,13 +2,9 @@
 
 Smol RAG is a lightweight retrieval-augmented generation system heavily inspired by and borrowing code from LightRAG. It supports multiple query types and includes a robust pipeline for ingesting, embedding, and updating documents.
 
-The document ingestion process is central to the system. Documents are split into excerpts, summarised, embedded, and checked for updates using hash-based deduplication. Each document is tracked using a combination of its file path and a hash of its content. If a file path already exists but the hash has changed, Smol RAG automatically removes the old version and re-ingests the updated content. This ensures that queries always reflect the most recent state of your source materials without unnecessary reprocessing.
-
-## Overview
-
-Smol RAG is a lightweight semantic + knowledge graph search engine that ingests documents, breaks them into smart excerpts, and indexes them both semantically (via vector embeddings) and structurally (via a knowledge graph).
-
 ## Document Ingestion & Update Handling
+
+The document ingestion process is central to the system. Documents are split into excerpts, summarised, embedded, and checked for updates using hash-based deduplication. Each document is tracked using a combination of its file path and a hash of its content. If a file path already exists but the hash has changed, Smol RAG automatically removes the old version and re-ingests the updated content. This ensures that queries always reflect the most recent state of your source materials without unnecessary reprocessing.
 
 - **Smart Hashing for Change Detection**  
   Each document's full content is hashed to generate a unique ID. This ensures:
