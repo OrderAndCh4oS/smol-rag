@@ -1,6 +1,6 @@
 # Smol RAG
 
-Smol RAG is a lightweight retrieval-augmented generation system heavily inspired by LightRAG. It supports multiple query types and includes a robust pipeline for ingesting, embedding, and updating documents.
+Smol RAG is a lightweight retrieval-augmented generation system heavily inspired by and borrowing prompts and patterns from LightRAG. It supports multiple query types and includes a robust pipeline for ingesting, embedding, and updating documents.
 
 ## Document Ingestion & Update Handling
 
