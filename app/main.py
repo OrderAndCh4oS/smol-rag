@@ -11,13 +11,14 @@ from app.llm import get_embedding, get_completion
 from app.logger import logger, set_logger
 
 from app.definitions import INPUT_DOCS_DIR, SOURCE_TO_DOC_ID_MAP, DOC_ID_TO_SOURCE_MAP, EMBEDDINGS_DB, EXCERPT_DB, \
-    DOC_ID_TO_EXCERPT_IDS, KG_DB, ENTITIES_DB, RELATIONSHIPS_DB, KG_SEP, TUPLE_SEP, REC_SEP, COMPLETE_TAG
+    DOC_ID_TO_EXCERPT_IDS, KG_DB, ENTITIES_DB, RELATIONSHIPS_DB, KG_SEP, TUPLE_SEP, REC_SEP, COMPLETE_TAG, QUERY_CACHE, \
+    EMBEDDING_CACHE, DATA_DIR, LOG_DIR
 from app.prompts import get_query_system_prompt, excerpt_summary_prompt, get_extract_entities_prompt, \
     get_high_low_level_keywords_prompt, get_kg_query_system_prompt, get_mix_system_prompt
 
 from app.utilities import get_json, remove_from_json, read_file, get_docs, make_hash, add_to_json, \
     split_string_by_multi_markers, clean_str, extract_json_from_text, is_float_regex, truncate_list_by_token_size, \
-    list_of_list_to_csv, get_encoded_tokens
+    list_of_list_to_csv, get_encoded_tokens, create_file_if_not_exists, delete_all_files
 
 dim = 1536
 embeddings_db = NanoVectorDB(dim, storage_file=EMBEDDINGS_DB)
@@ -192,7 +193,7 @@ def extract_entities(content, doc_id):
                     source, target = sorted([source, target])
                     logger.info(
                         f"Relationship - Source: {source}, Target: {target}, Description: {description}, Keywords: {keywords}, Weight: {weight}, Excerpt ID: {excerpt_id}")
-                    # Todo: summarise descriptions with LLM query
+                    # Todo: summarise descriptions with LLM query if they get too long
                     existing_edge = graph.edges.get((source, target))
                     weight = float(weight) if is_float_regex(weight) else 1.0
                     if existing_edge:
@@ -607,6 +608,7 @@ def get_entities_from_relationships(graph, kg_dataset):
     entity_names = []
     seen = set()
 
+
     for e in kg_dataset:
         if e["src_tgt"][0] not in seen:
             entity_names.append(e["src_tgt"][0])
@@ -618,11 +620,14 @@ def get_entities_from_relationships(graph, kg_dataset):
     data = [graph.nodes.get(entity_name) for entity_name in entity_names]
     degrees = [graph.degree(entity_name) for entity_name in entity_names]
 
+    # Todo: we need to filter out missing node data (ie no description) in case the node was added as an edge only
     data = [
         {**n, "entity_name": k, "rank": d}
-        for k, n, d in zip(entity_names, data, degrees)
+        for k, n, d in zip(entity_names, data, degrees) if 'description' in n
     ]
 
+
+    # Todo: figure out how we hit a bug here with missing description
     data = truncate_list_by_token_size(
         data,
         get_text_for_row=lambda x: x["description"],
@@ -635,17 +640,17 @@ def get_entities_from_relationships(graph, kg_dataset):
 if __name__ == '__main__':
     set_logger("main.log")
 
-    # delete_all_files(DATA_DIR)
-    # delete_all_files(LOG_DIR)
-    #
-    # create_file_if_not_exists(SOURCE_TO_DOC_ID_MAP, "{}")
-    # create_file_if_not_exists(DOC_ID_TO_SOURCE_MAP, "{}")
-    # create_file_if_not_exists(DOC_ID_TO_EXCERPT_IDS, "{}")
-    # create_file_if_not_exists(EXCERPT_DB, "{}")
-    # create_file_if_not_exists(QUERY_CACHE, "{}")
-    # create_file_if_not_exists(EMBEDDING_CACHE, "{}")
-    #
-    # import_documents()
+    delete_all_files(DATA_DIR)
+    delete_all_files(LOG_DIR)
+
+    create_file_if_not_exists(SOURCE_TO_DOC_ID_MAP, "{}")
+    create_file_if_not_exists(DOC_ID_TO_SOURCE_MAP, "{}")
+    create_file_if_not_exists(DOC_ID_TO_EXCERPT_IDS, "{}")
+    create_file_if_not_exists(EXCERPT_DB, "{}")
+    create_file_if_not_exists(QUERY_CACHE, "{}")
+    create_file_if_not_exists(EMBEDDING_CACHE, "{}")
+
+    import_documents()
 
     # print(query("what do rabbits eat?"))  # Should answer
     # print(query("what do cats eat?"))  # Should reject

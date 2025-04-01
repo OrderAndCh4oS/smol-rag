@@ -10,7 +10,7 @@ from app.utilities import add_to_json, get_json, make_hash
 
 load_dotenv()
 
-logging.basicConfig(level=logging.DEBUG)
+# logging.basicConfig(level=logging.DEBUG)
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 query_cache = {}

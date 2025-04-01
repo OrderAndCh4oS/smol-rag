@@ -2,8 +2,8 @@ import inspect
 
 from app.definitions import EVALUATION_DATA_SET
 from app.llm import get_completion
-from app.main import query
-from app.utilities import get_json
+from app.main import query, mix_query, local_kg_query, global_kg_query, hybrid_kg_query
+from app.utilities import get_json, create_file_if_not_exists
 
 
 def evaluate_accuracy(query, response, source):
@@ -43,7 +43,13 @@ if __name__ == '__main__':
     results = []
 
     for row in data_set:
-        response = query(row["query"])
+
+        # response = query(row["query"])
+        # response = local_kg_query(row["query"])
+        # response = global_kg_query(row["query"])
+        # response = hybrid_kg_query(row["query"])
+        response = mix_query(row["query"])
+
         result = evaluate_accuracy(row["query"], response, row["pull_quote"])
         results.append(result)
 
