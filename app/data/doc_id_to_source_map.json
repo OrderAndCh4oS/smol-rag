@@ -1,14 +1,15 @@
 {
+  "doc_7fcad852a4df6c46ad29749e30679609": "/Users/orderandchaos/code/minimal-light-rag/app/input_docs/01-project-overview.md",
+  "doc_68ee570c562a4cdfb5c37cf96be2898d": "/Users/orderandchaos/code/minimal-light-rag/app/input_docs/04-similarity-search.md",
   "doc_b117633f7a8a496b4f07a2327947e4d4": "/Users/orderandchaos/code/minimal-light-rag/app/input_docs/09-api-documentation.md",
   "doc_527d38dfafb42e0277ca302149af6bdb": "/Users/orderandchaos/code/minimal-light-rag/app/input_docs/12-troubleshooting-guide.md",
+  "doc_d741bc43c52b5b5bb9c3f2a21dd5d086": "/Users/orderandchaos/code/minimal-light-rag/app/input_docs/08-usage-examples.md",
+  "doc_214a24f030714314a18db91e5f954afa": "/Users/orderandchaos/code/minimal-light-rag/app/input_docs/03-excerpt-embeddings.md",
+  "doc_c554f080ffc12bde105430067c572f1e": "/Users/orderandchaos/code/minimal-light-rag/app/input_docs/10-configuration-options.md",
+  "doc_21c8427853d5381b44b52075c908d227": "/Users/orderandchaos/code/minimal-light-rag/app/input_docs/02-document-ingestion.md",
   "doc_2c751da5b112adc2cd611bbd9bb377fa": "/Users/orderandchaos/code/minimal-light-rag/app/input_docs/11-performance-considerations.md",
   "doc_dd41b1cad448630c72186b53ef909f09": "/Users/orderandchaos/code/minimal-light-rag/app/input_docs/05-knowledge-graphs.md",
-  "doc_79b1966b0925f4513282c449c4e7dc0a": "/Users/orderandchaos/code/minimal-light-rag/app/input_docs/06-query-types.md",
-  "doc_d741bc43c52b5b5bb9c3f2a21dd5d086": "/Users/orderandchaos/code/minimal-light-rag/app/input_docs/08-usage-examples.md",
-  "doc_c554f080ffc12bde105430067c572f1e": "/Users/orderandchaos/code/minimal-light-rag/app/input_docs/10-configuration-options.md",
   "doc_93121085de0e7adf39ab2e255aa404c4": "/Users/orderandchaos/code/minimal-light-rag/app/input_docs/07-implementation-details.md",
-  "doc_68ee570c562a4cdfb5c37cf96be2898d": "/Users/orderandchaos/code/minimal-light-rag/app/input_docs/04-similarity-search.md",
-  "doc_7fcad852a4df6c46ad29749e30679609": "/Users/orderandchaos/code/minimal-light-rag/app/input_docs/01-project-overview.md",
-  "doc_214a24f030714314a18db91e5f954afa": "/Users/orderandchaos/code/minimal-light-rag/app/input_docs/03-excerpt-embeddings.md",
-  "doc_21c8427853d5381b44b52075c908d227": "/Users/orderandchaos/code/minimal-light-rag/app/input_docs/02-document-ingestion.md"
+  "doc_79b1966b0925f4513282c449c4e7dc0a": "/Users/orderandchaos/code/minimal-light-rag/app/input_docs/06-query-types.md",
+  "doc_36f1dedcde291f714871e45b90d7e076": "/Users/orderandchaos/code/minimal-light-rag/app/input_docs/13-performance-optimizations.md"
 }

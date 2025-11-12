@@ -121,3 +121,56 @@ class OpenAiLlm:
             await self.embedding_cache_kv.save()
 
         return embedding
+
+    async def get_embeddings(self, contents: List[Any], model: Optional[str] = None) -> List[List[float]]:
+        """
+        Gets embeddings for multiple contents in a batched API call.
+        Uses cache when available and only fetches uncached embeddings.
+
+        :param contents: List of texts or data to be embedded.
+        :param model: The model to use; if None, use self.embedding_model.
+        :return: List of embedding vectors in the same order as contents.
+        """
+        model = model or self.embedding_model
+
+        # Check cache for each content
+        embeddings = [None] * len(contents)
+        uncached_indices = []
+        uncached_contents = []
+
+        for i, content in enumerate(contents):
+            content_hash = make_hash(str(content), 'emb-')
+            if await self.embedding_cache_kv.has(content_hash):
+                logger.debug(f"Embedding cache hit for item {i}")
+                embeddings[i] = await self.embedding_cache_kv.get_by_key(content_hash)
+            else:
+                uncached_indices.append(i)
+                uncached_contents.append((content, content_hash))
+
+        # Batch fetch uncached embeddings
+        if uncached_contents:
+            logger.info(f"Fetching {len(uncached_contents)} new embeddings in batch")
+            try:
+                response = self.client.embeddings.create(
+                    model=model,
+                    input=[content for content, _ in uncached_contents],
+                )
+
+                # Store new embeddings in cache and result
+                for idx, (content, content_hash), embedding_data in zip(
+                    uncached_indices, uncached_contents, response.data
+                ):
+                    embedding = embedding_data.embedding
+                    embeddings[idx] = embedding
+                    await self.embedding_cache_kv.add(content_hash, embedding)
+
+                # Save cache once after batch
+                await self.embedding_cache_kv.save()
+
+            except Exception as e:
+                logger.error(f"Error getting batch embeddings: {e}")
+                raise
+        else:
+            logger.info(f"All {len(contents)} embeddings served from cache")
+
+        return embeddings

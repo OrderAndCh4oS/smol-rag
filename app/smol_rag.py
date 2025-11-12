@@ -74,6 +74,10 @@ class SmolRag:
         async with self.llm_limiter:
             return await self.llm.get_embedding(*args, **kwargs)
 
+    async def rate_limited_get_embeddings(self, *args, **kwargs):
+        async with self.llm_limiter:
+            return await self.llm.get_embeddings(*args, **kwargs)
+
     async def remove_document_by_id(self, doc_id):
         if await self.doc_to_source_kv.has(doc_id):
             source = await self.doc_to_source_kv.get_by_key(doc_id)
@@ -111,12 +115,23 @@ class SmolRag:
 
         await asyncio.gather(*tasks)
 
+        # Batch save all stores once at the end
+        await asyncio.gather(
+            self.source_to_doc_kv.save(),
+            self.doc_to_source_kv.save(),
+            self.excerpt_kv.save(),
+            self.doc_to_excerpt_kv.save(),
+            self.embeddings_db.save(),
+            self.entities_db.save(),
+            self.relationships_db.save()
+        )
+        self.graph.save()
+
     async def _add_document_maps(self, source, content):
         doc_id = make_hash(content, "doc_")
         await self.source_to_doc_kv.add(source, doc_id)
         await self.doc_to_source_kv.add(doc_id, source)
-        await self.source_to_doc_kv.save()
-        await self.doc_to_source_kv.save()
+        # Saves are batched in import_documents()
 
     async def _embed_document(self, content, doc_id):
         start_time = time.time()
@@ -126,11 +141,9 @@ class SmolRag:
         summary_tasks = [self._get_excerpt_summary(content, excerpt) for excerpt in excerpts]
         summaries = await asyncio.gather(*summary_tasks)
 
-        embedding_tasks = []
-        for excerpt, summary in zip(excerpts, summaries):
-            embedding_content = f"{excerpt}\n\n{summary}"
-            embedding_tasks.append(self.rate_limited_get_embedding(embedding_content))
-        embedding_results = await asyncio.gather(*embedding_tasks)
+        # Batch all embeddings into a single API call
+        embedding_contents = [f"{excerpt}\n\n{summary}" for excerpt, summary in zip(excerpts, summaries)]
+        embedding_results = await self.rate_limited_get_embeddings(embedding_contents)
         storage_tasks = []
         for i, (excerpt, summary, embedding_result) in enumerate(zip(excerpts, summaries, embedding_results)):
             excerpt_id = make_hash(excerpt, "excerpt_id_")
@@ -154,10 +167,8 @@ class SmolRag:
             logger.info(f"Created embedding for excerpt {excerpt_id} associated with document {doc_id}")
         await asyncio.gather(*storage_tasks)
 
-        await self.excerpt_kv.save()
-        await self.embeddings_db.save()
         await self.doc_to_excerpt_kv.add(doc_id, excerpt_ids)
-        await self.doc_to_excerpt_kv.save()
+        # Saves are batched in import_documents()
         elapsed = time.time() - start_time
         logger.info(f"Document {doc_id} processed with {len(excerpts)} excerpts in {elapsed:.2f} seconds.")
 
@@ -192,9 +203,9 @@ class SmolRag:
                 clean_records.append(clean_str(record))
             records = clean_records
 
-            tasks = []
             entities_to_upsert = []
             relationships_to_upsert = []
+            embedding_contents = []
 
             for record in records:
                 fields = split_string_by_multi_markers(record, [TUPLE_SEP])
@@ -210,7 +221,9 @@ class SmolRag:
                         if existing_node:
                             existing_descriptions = split_string_by_multi_markers(existing_node["description"],
                                                                                   [KG_SEP])
-                            descriptions = KG_SEP.join(set(list(existing_descriptions) + [description]))
+                            # Use set to remove duplicates and limit to 10 most recent descriptions
+                            unique_descriptions = list(set(existing_descriptions + [description]))
+                            descriptions = KG_SEP.join(unique_descriptions[-10:])
                             existing_categories = split_string_by_multi_markers(existing_node["category"], [KG_SEP])
                             categories = KG_SEP.join(set(list(existing_categories) + [category]))
                             existing_excerpt_ids = split_string_by_multi_markers(existing_node["excerpt_id"], [KG_SEP])
@@ -227,7 +240,7 @@ class SmolRag:
                         total_entities += 1
                         entity_id = make_hash(name, prefix="ent-")
                         embedding_content = f"{name} {description}"
-                        tasks.append(self.rate_limited_get_embedding(embedding_content))
+                        embedding_contents.append(embedding_content)
                         entities_to_upsert.append({
                             "__id__": entity_id,
                             "__entity_name__": name,
@@ -243,9 +256,13 @@ class SmolRag:
                         if existing_edge:
                             existing_descriptions = split_string_by_multi_markers(existing_edge["description"],
                                                                                   [KG_SEP])
-                            descriptions = KG_SEP.join(set(list(existing_descriptions) + [description]))
+                            # Use set to remove duplicates and limit to 10 most recent descriptions
+                            unique_descriptions = list(set(existing_descriptions + [description]))
+                            descriptions = KG_SEP.join(unique_descriptions[-10:])
                             existing_keywords = split_string_by_multi_markers(existing_edge["keywords"], [KG_SEP])
-                            keywords = KG_SEP.join(set(list(existing_keywords) + [keywords]))
+                            # Limit keywords to 20 unique entries
+                            unique_keywords = list(set(existing_keywords + [keywords]))
+                            keywords = KG_SEP.join(unique_keywords[-20:])
                             existing_excerpt_ids = split_string_by_multi_markers(existing_edge["excerpt_id"], [KG_SEP])
                             excerpt_ids = KG_SEP.join(set(list(existing_excerpt_ids) + [excerpt_id]))
                             weight = sum([weight, existing_edge["weight"]])
@@ -260,7 +277,7 @@ class SmolRag:
 
                         relationship_id = make_hash(f"{source}_{target}", prefix="ent-")
                         embedding_content = f"{keywords} {source} {target} {description}"
-                        tasks.append(self.rate_limited_get_embedding(embedding_content))
+                        embedding_contents.append(embedding_content)
                         relationships_to_upsert.append({
                             "__id__": relationship_id,
                             "__source__": source,
@@ -271,24 +288,24 @@ class SmolRag:
                     if len(fields) >= 2:
                         self.graph.set_field('content_keywords', fields[1])
 
-            results = await asyncio.gather(*tasks)
+            # Batch all embeddings into a single API call
+            if embedding_contents:
+                results = await self.rate_limited_get_embeddings(embedding_contents)
 
-            idx = 0
-            for entity in entities_to_upsert:
-                vector = np.array(results[idx], dtype=np.float32)
-                entity["__vector__"] = vector
-                idx += 1
+                idx = 0
+                for entity in entities_to_upsert:
+                    vector = np.array(results[idx], dtype=np.float32)
+                    entity["__vector__"] = vector
+                    idx += 1
 
-            for relation in relationships_to_upsert:
-                vector = np.array(results[idx], dtype=np.float32)
-                relation["__vector__"] = vector
-                idx += 1
+                for relation in relationships_to_upsert:
+                    vector = np.array(results[idx], dtype=np.float32)
+                    relation["__vector__"] = vector
+                    idx += 1
 
             await asyncio.gather(self.entities_db.upsert(entities_to_upsert), self.relationships_db.upsert(relationships_to_upsert))
 
-        await asyncio.gather(self.entities_db.save(), self.relationships_db.save())
-
-        self.graph.save()
+        # Saves are batched in import_documents()
         elapsed = time.time() - start_time
         logger.info(f"Extracted {total_entities} entities and {total_relationships} relationships "
                     f"from document {doc_id} in {elapsed:.2f} seconds.")
@@ -300,7 +317,7 @@ class SmolRag:
         excerpt_context = self._get_excerpt_context(excerpts)
         system_prompt = get_query_system_prompt(excerpt_context)
 
-        return await self.rate_limited_get_completion(text, context=system_prompt.strip(), use_cache=False)
+        return await self.rate_limited_get_completion(text, context=system_prompt.strip(), use_cache=True)
 
     def _get_excerpt_context(self, excerpts):
         context = ""
@@ -341,7 +358,7 @@ class SmolRag:
         excerpts = ll_entity_excerpts + hl_entity_excerpts
         context = self._get_kg_query_context(entities, excerpts, relations)
         system_prompt = get_kg_query_system_prompt(context)
-        return await self.rate_limited_get_completion(text, context=system_prompt.strip(), use_cache=False)
+        return await self.rate_limited_get_completion(text, context=system_prompt.strip(), use_cache=True)
 
     async def local_kg_query(self, text):
         prompt = get_high_low_level_keywords_prompt(text)
@@ -355,7 +372,7 @@ class SmolRag:
         excerpts = ll_entity_excerpts
         context = self._get_kg_query_context(entities, excerpts, relations)
         system_prompt = get_kg_query_system_prompt(context)
-        return await self.rate_limited_get_completion(text, context=system_prompt.strip(), use_cache=False)
+        return await self.rate_limited_get_completion(text, context=system_prompt.strip(), use_cache=True)
 
     async def global_kg_query(self, text):
         prompt = get_high_low_level_keywords_prompt(text)
@@ -369,7 +386,7 @@ class SmolRag:
         excerpts = hl_entity_excerpts
         context = self._get_kg_query_context(entities, excerpts, relations)
         system_prompt = get_kg_query_system_prompt(context)
-        return await self.rate_limited_get_completion(text, context=system_prompt.strip(), use_cache=False)
+        return await self.rate_limited_get_completion(text, context=system_prompt.strip(), use_cache=True)
 
     async def mix_query(self, text):
         prompt = get_high_low_level_keywords_prompt(text)
@@ -387,7 +404,7 @@ class SmolRag:
         kg_context = self._get_kg_query_context(kg_entities, kg_excerpts, kg_relations)
         excerpt_context = self._get_excerpt_context(query_excerpts)
         system_prompt = get_mix_system_prompt(excerpt_context, kg_context)
-        return await self.rate_limited_get_completion(text, context=system_prompt.strip(), use_cache=False)
+        return await self.rate_limited_get_completion(text, context=system_prompt.strip(), use_cache=True)
 
     def _get_kg_query_context(self, entities, excerpts, relations):
         entity_csv = [["entity", "type", "description", "rank"]]
