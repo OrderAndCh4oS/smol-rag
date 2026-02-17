@@ -1,14 +1,16 @@
 import asyncio
 import inspect
 import time
+from typing import Any
 
 import numpy as np
 from aiolimiter import AsyncLimiter
 
 from app.chunking import preserve_markdown_code_excerpts
 from app.definitions import INPUT_DOCS_DIR, SOURCE_TO_DOC_ID_KV_PATH, DOC_ID_TO_SOURCE_KV_PATH, EMBEDDINGS_DB, \
-    EXCERPT_KV_PATH, DOC_ID_TO_EXCERPT_KV_PATH, KG_DB, ENTITIES_DB, RELATIONSHIPS_DB, KG_SEP, TUPLE_SEP, REC_SEP, \
-    COMPLETE_TAG, LOG_DIR, COMPLETION_MODEL, EMBEDDING_MODEL
+    EXCERPT_KV_PATH, DOC_ID_TO_EXCERPT_KV_PATH, DOC_ID_TO_ENTITY_IDS_KV_PATH, DOC_ID_TO_RELATIONSHIP_IDS_KV_PATH, \
+    ENTITY_ID_TO_DOC_IDS_KV_PATH, RELATIONSHIP_ID_TO_DOC_IDS_KV_PATH, KG_DB, ENTITIES_DB, RELATIONSHIPS_DB, KG_SEP, \
+    TUPLE_SEP, REC_SEP, COMPLETE_TAG, LOG_DIR, COMPLETION_MODEL, EMBEDDING_MODEL
 from app.graph_store import NetworkXGraphStore
 from app.kv_store import JsonKvStore
 from app.logger import logger, set_logger
@@ -16,7 +18,7 @@ from app.openai_llm import OpenAiLlm
 from app.prompts import get_query_system_prompt, excerpt_summary_prompt, get_extract_entities_prompt, \
     get_high_low_level_keywords_prompt, get_kg_query_system_prompt, get_mix_system_prompt
 from app.utilities import read_file, get_docs, make_hash, split_string_by_multi_markers, clean_str, \
-    extract_json_from_text, is_float_regex, truncate_list_by_token_size, \
+    extract_json_from_text, truncate_list_by_token_size, \
     list_of_list_to_csv, delete_all_files
 from app.vector_store import NanoVectorStore
 
@@ -32,20 +34,27 @@ class SmolRag:
             source_to_doc_kv=None,
             doc_to_source_kv=None,
             doc_to_excerpt_kv=None,
+            doc_to_entity_kv=None,
+            doc_to_relationship_kv=None,
+            entity_to_doc_kv=None,
+            relationship_to_doc_kv=None,
             excerpt_kv=None,
             query_cache_kv=None,
             embedding_cache_kv=None,
             graph_db=None,
             dimensions=None,
             excerpt_size=2000,
-            overlap=200
+            overlap=200,
+            ingest_concurrency=4
     ):
         set_logger("main.log")
         self.llm_limiter = AsyncLimiter(max_rate=100, time_period=1)
+        self._provenance_lock = asyncio.Lock()
 
         self.excerpt_fn = excerpt_fn or preserve_markdown_code_excerpts
         self.excerpt_size = excerpt_size
         self.overlap = overlap
+        self.ingest_concurrency = max(1, ingest_concurrency)
 
         self.llm = llm or OpenAiLlm(
             COMPLETION_MODEL,
@@ -62,6 +71,10 @@ class SmolRag:
         self.source_to_doc_kv = source_to_doc_kv or JsonKvStore(SOURCE_TO_DOC_ID_KV_PATH)
         self.doc_to_source_kv = doc_to_source_kv or JsonKvStore(DOC_ID_TO_SOURCE_KV_PATH)
         self.doc_to_excerpt_kv = doc_to_excerpt_kv or JsonKvStore(DOC_ID_TO_EXCERPT_KV_PATH)
+        self.doc_to_entity_kv = doc_to_entity_kv or JsonKvStore(DOC_ID_TO_ENTITY_IDS_KV_PATH)
+        self.doc_to_relationship_kv = doc_to_relationship_kv or JsonKvStore(DOC_ID_TO_RELATIONSHIP_IDS_KV_PATH)
+        self.entity_to_doc_kv = entity_to_doc_kv or JsonKvStore(ENTITY_ID_TO_DOC_IDS_KV_PATH)
+        self.relationship_to_doc_kv = relationship_to_doc_kv or JsonKvStore(RELATIONSHIP_ID_TO_DOC_IDS_KV_PATH)
         self.excerpt_kv = excerpt_kv or JsonKvStore(EXCERPT_KV_PATH)
 
         self.graph = graph_db or NetworkXGraphStore(KG_DB)
@@ -78,54 +91,232 @@ class SmolRag:
         async with self.llm_limiter:
             return await self.llm.get_embeddings(*args, **kwargs)
 
-    async def remove_document_by_id(self, doc_id):
+    @staticmethod
+    def _prune_kg_ids(raw_value: Any, ids_to_remove: set[str]) -> str:
+        values = split_string_by_multi_markers(str(raw_value or ""), [KG_SEP])
+        filtered = [value for value in values if value not in ids_to_remove]
+        deduped = list(dict.fromkeys(filtered))
+        return KG_SEP.join(deduped)
+
+    def _find_entity_name_for_id(self, entity_id: str):
+        for entity_name in self.graph.graph.nodes:
+            if make_hash(entity_name, prefix="ent-") == entity_id:
+                return entity_name
+        return None
+
+    def _find_relationship_endpoints_for_id(self, relationship_id: str):
+        for source, target in self.graph.graph.edges:
+            sorted_source, sorted_target = sorted((source, target))
+            current_id = make_hash(f"{sorted_source}_{sorted_target}", prefix="rel-")
+            if current_id == relationship_id:
+                return sorted_source, sorted_target
+        return None, None
+
+    async def _cleanup_entity_contributions(self, doc_id: str, doc_excerpt_ids: set[str]) -> bool:
+        entity_ids = await self.doc_to_entity_kv.get_by_key(doc_id)
+        if entity_ids is None:
+            return False
+        if not entity_ids:
+            await self.doc_to_entity_kv.remove(doc_id)
+            return True
+
+        rows = await self.entities_db.get(entity_ids)
+        entity_rows_by_id = {row.get("__id__"): row for row in rows}
+        ids_to_delete = []
+
+        for entity_id in entity_ids:
+            docs = await self.entity_to_doc_kv.get_by_key(entity_id) or []
+            remaining_docs = [item for item in docs if item != doc_id]
+
+            entity_row = entity_rows_by_id.get(entity_id)
+            entity_name = entity_row.get("__entity_name__") if entity_row else None
+            if entity_name is None:
+                entity_name = self._find_entity_name_for_id(entity_id)
+            node = self.graph.get_node(entity_name) if entity_name else None
+
+            if node and "excerpt_id" in node:
+                pruned_excerpt_ids = self._prune_kg_ids(node.get("excerpt_id"), doc_excerpt_ids)
+                if remaining_docs:
+                    # Excerpt IDs are content-hashed and can overlap across docs.
+                    # Keep node state when other docs still reference this entity.
+                    effective_excerpt_ids = pruned_excerpt_ids or node.get("excerpt_id", "")
+                    updated_node = {**node, "excerpt_id": effective_excerpt_ids}
+                    await self.graph.async_add_node(entity_name, **updated_node)
+                    if not pruned_excerpt_ids:
+                        logger.debug(
+                            "Retaining entity %s after prune because remaining docs still reference it.",
+                            entity_name,
+                        )
+                else:
+                    await self.graph.async_remove_node(entity_name)
+
+            if remaining_docs:
+                await self.entity_to_doc_kv.add(entity_id, remaining_docs)
+            else:
+                await self.entity_to_doc_kv.remove(entity_id)
+                ids_to_delete.append(entity_id)
+
+        await self.doc_to_entity_kv.remove(doc_id)
+        if ids_to_delete:
+            await self.entities_db.delete(ids_to_delete)
+        return True
+
+    async def _cleanup_relationship_contributions(self, doc_id: str, doc_excerpt_ids: set[str]) -> bool:
+        relationship_ids = await self.doc_to_relationship_kv.get_by_key(doc_id)
+        if relationship_ids is None:
+            return False
+        if not relationship_ids:
+            await self.doc_to_relationship_kv.remove(doc_id)
+            return True
+
+        rows = await self.relationships_db.get(relationship_ids)
+        relationship_rows_by_id = {row.get("__id__"): row for row in rows}
+        ids_to_delete = []
+
+        for relationship_id in relationship_ids:
+            docs = await self.relationship_to_doc_kv.get_by_key(relationship_id) or []
+            remaining_docs = [item for item in docs if item != doc_id]
+
+            relationship_row = relationship_rows_by_id.get(relationship_id)
+            source = relationship_row.get("__source__") if relationship_row else None
+            target = relationship_row.get("__target__") if relationship_row else None
+            if not source or not target:
+                source, target = self._find_relationship_endpoints_for_id(relationship_id)
+            edge = self.graph.get_edge((source, target)) if source and target else None
+
+            if edge and "excerpt_id" in edge:
+                pruned_excerpt_ids = self._prune_kg_ids(edge.get("excerpt_id"), doc_excerpt_ids)
+                if remaining_docs:
+                    # Excerpt IDs are content-hashed and can overlap across docs.
+                    # Keep edge state when other docs still reference this relationship.
+                    effective_excerpt_ids = pruned_excerpt_ids or edge.get("excerpt_id", "")
+                    updated_edge = {**edge, "excerpt_id": effective_excerpt_ids}
+                    await self.graph.async_add_edge(source, target, **updated_edge)
+                    if not pruned_excerpt_ids:
+                        logger.debug(
+                            "Retaining relationship %s -> %s after prune because remaining docs still reference it.",
+                            source,
+                            target,
+                        )
+                else:
+                    await self.graph.async_remove_edge(source, target)
+
+            if remaining_docs:
+                await self.relationship_to_doc_kv.add(relationship_id, remaining_docs)
+            else:
+                await self.relationship_to_doc_kv.remove(relationship_id)
+                ids_to_delete.append(relationship_id)
+
+        await self.doc_to_relationship_kv.remove(doc_id)
+        if ids_to_delete:
+            await self.relationships_db.delete(ids_to_delete)
+        return True
+
+    async def _track_kg_provenance(self, doc_id: str, entity_ids: set[str], relationship_ids: set[str]):
+        async with self._provenance_lock:
+            await self.doc_to_entity_kv.add(doc_id, sorted(entity_ids))
+            await self.doc_to_relationship_kv.add(doc_id, sorted(relationship_ids))
+
+            for entity_id in entity_ids:
+                docs = await self.entity_to_doc_kv.get_by_key(entity_id) or []
+                if doc_id not in docs:
+                    docs.append(doc_id)
+                    await self.entity_to_doc_kv.add(entity_id, docs)
+
+            for relationship_id in relationship_ids:
+                docs = await self.relationship_to_doc_kv.get_by_key(relationship_id) or []
+                if doc_id not in docs:
+                    docs.append(doc_id)
+                    await self.relationship_to_doc_kv.add(relationship_id, docs)
+
+    async def remove_document_by_id(self, doc_id, persist=True):
+        removed_source_map = False
+        removed_excerpt_data = False
+        removed_kg_data = False
+        excerpt_ids = []
+
         if await self.doc_to_source_kv.has(doc_id):
             source = await self.doc_to_source_kv.get_by_key(doc_id)
             await asyncio.gather(self.doc_to_source_kv.remove(doc_id), self.source_to_doc_kv.remove(source))
-            await asyncio.gather(self.doc_to_source_kv.save(), self.source_to_doc_kv.save())
+            removed_source_map = True
+
         if await self.doc_to_excerpt_kv.has(doc_id):
-            excerpt_ids = await self.doc_to_excerpt_kv.get_by_key(doc_id)
-            print(excerpt_ids)
+            excerpt_ids = await self.doc_to_excerpt_kv.get_by_key(doc_id) or []
             excerpts_to_remove = [self.excerpt_kv.remove(excerpt_id) for excerpt_id in excerpt_ids]
             await asyncio.gather(self.embeddings_db.delete(excerpt_ids), *excerpts_to_remove)
             await self.doc_to_excerpt_kv.remove(doc_id)
-            await asyncio.gather(self.excerpt_kv.save(), self.doc_to_excerpt_kv.save())
-            await self.embeddings_db.save()
+            removed_excerpt_data = True
+
+        excerpt_ids_set = set(excerpt_ids)
+        async with self._provenance_lock:
+            entity_removed = await self._cleanup_entity_contributions(doc_id, excerpt_ids_set)
+            relationship_removed = await self._cleanup_relationship_contributions(doc_id, excerpt_ids_set)
+        removed_kg_data = entity_removed or relationship_removed
+
+        if not persist:
+            return
+
+        save_tasks = []
+        if removed_source_map:
+            save_tasks.extend([self.doc_to_source_kv.save(), self.source_to_doc_kv.save()])
+        if removed_excerpt_data:
+            save_tasks.extend([self.excerpt_kv.save(), self.doc_to_excerpt_kv.save(), self.embeddings_db.save()])
+        if removed_kg_data:
+            save_tasks.extend([
+                self.doc_to_entity_kv.save(),
+                self.doc_to_relationship_kv.save(),
+                self.entity_to_doc_kv.save(),
+                self.relationship_to_doc_kv.save(),
+                self.entities_db.save(),
+                self.relationships_db.save(),
+            ])
+            save_tasks.append(self.graph.async_save())
+        if save_tasks:
+            await asyncio.gather(*save_tasks)
 
     async def import_documents(self):
         sources = get_docs(INPUT_DOCS_DIR)
-        tasks = []
-        for source in sources:
-            content = read_file(source)
-            doc_id = make_hash(content, "doc_")
-            if not await self.source_to_doc_kv.has(source):
-                logger.info(f"Importing new document: {source} (ID: {doc_id})")
-                tasks.append(self._add_document_maps(source, content))
-                tasks.append(self._embed_document(content, doc_id))
-                tasks.append(self._extract_entities(content, doc_id))
-            elif not await self.source_to_doc_kv.equal(source, doc_id):
-                logger.info(f"Updating document: {source} (New ID: {doc_id})")
-                old_doc_id = await self.source_to_doc_kv.get_by_key(source)
-                tasks.append(self.remove_document_by_id(old_doc_id))
-                tasks.append(self._add_document_maps(source, content))
-                tasks.append(self._embed_document(content, doc_id))
-                tasks.append(self._extract_entities(content, doc_id))
-            else:
-                logger.debug(f"No changes detected for document: {source} (ID: {doc_id})")
+        semaphore = asyncio.Semaphore(self.ingest_concurrency)
+        await asyncio.gather(*(self._process_source(source, semaphore) for source in sources))
+        await self._save_stores()
 
-        await asyncio.gather(*tasks)
-
-        # Batch save all stores once at the end
+    async def _save_stores(self):
         await asyncio.gather(
             self.source_to_doc_kv.save(),
             self.doc_to_source_kv.save(),
             self.excerpt_kv.save(),
             self.doc_to_excerpt_kv.save(),
+            self.doc_to_entity_kv.save(),
+            self.doc_to_relationship_kv.save(),
+            self.entity_to_doc_kv.save(),
+            self.relationship_to_doc_kv.save(),
             self.embeddings_db.save(),
             self.entities_db.save(),
             self.relationships_db.save()
         )
         self.graph.save()
+
+    async def _process_source(self, source, semaphore):
+        async with semaphore:
+            content = read_file(source)
+            doc_id = make_hash(content, "doc_")
+            if not await self.source_to_doc_kv.has(source):
+                logger.info(f"Importing new document: {source} (ID: {doc_id})")
+                await self._add_document_maps(source, content)
+                await self._embed_document(content, doc_id)
+                await self._extract_entities(content, doc_id)
+                return
+
+            if not await self.source_to_doc_kv.equal(source, doc_id):
+                logger.info(f"Updating document: {source} (New ID: {doc_id})")
+                old_doc_id = await self.source_to_doc_kv.get_by_key(source)
+                await self.remove_document_by_id(old_doc_id, persist=False)
+                await self._add_document_maps(source, content)
+                await self._embed_document(content, doc_id)
+                await self._extract_entities(content, doc_id)
+                return
+
+            logger.debug(f"No changes detected for document: {source} (ID: {doc_id})")
 
     async def _add_document_maps(self, source, content):
         doc_id = make_hash(content, "doc_")
@@ -185,6 +376,8 @@ class SmolRag:
         start_time = time.time()
         total_entities = 0
         total_relationships = 0
+        doc_entity_ids = set()
+        doc_relationship_ids = set()
         excerpts = self.excerpt_fn(content, self.excerpt_size, self.overlap)
 
         extract_entity_tasks = [self.rate_limited_get_completion(get_extract_entities_prompt(excerpt)) for excerpt in
@@ -217,28 +410,16 @@ class SmolRag:
                 if record_type == 'entity':
                     if len(fields) >= 4:
                         _, name, category, description = fields[:4]
-                        existing_node = self.graph.get_node(name)
-                        if existing_node:
-                            existing_descriptions = split_string_by_multi_markers(existing_node["description"],
-                                                                                  [KG_SEP])
-                            # Use set to remove duplicates and limit to 10 most recent descriptions
-                            unique_descriptions = list(set(existing_descriptions + [description]))
-                            descriptions = KG_SEP.join(unique_descriptions[-10:])
-                            existing_categories = split_string_by_multi_markers(existing_node["category"], [KG_SEP])
-                            categories = KG_SEP.join(set(list(existing_categories) + [category]))
-                            existing_excerpt_ids = split_string_by_multi_markers(existing_node["excerpt_id"], [KG_SEP])
-                            excerpt_ids = KG_SEP.join(set(list(existing_excerpt_ids) + [excerpt_id]))
-                            # Todo: summarise descriptions with LLM query if they get too long
-                            self.graph.add_node(
-                                name,
-                                category=categories,
-                                description=descriptions,
-                                excerpt_id=excerpt_ids
-                            )
-                        else:
-                            self.graph.add_node(name, category=category, description=description, excerpt_id=excerpt_id)
+                        await self.graph.async_upsert_entity_node(
+                            name=name,
+                            category=category,
+                            description=description,
+                            excerpt_id=excerpt_id,
+                            sep=KG_SEP,
+                        )
                         total_entities += 1
                         entity_id = make_hash(name, prefix="ent-")
+                        doc_entity_ids.add(entity_id)
                         embedding_content = f"{name} {description}"
                         embedding_contents.append(embedding_content)
                         entities_to_upsert.append({
@@ -250,32 +431,24 @@ class SmolRag:
                     if len(fields) >= 6:
                         _, source, target, description, keywords, weight = fields[:6]
                         source, target = sorted([source, target])
-                        # Todo: summarise descriptions with LLM query if they get too long
-                        existing_edge = self.graph.get_edge((source, target))
-                        weight = float(weight) if is_float_regex(weight) else 1.0
-                        if existing_edge:
-                            existing_descriptions = split_string_by_multi_markers(existing_edge["description"],
-                                                                                  [KG_SEP])
-                            # Use set to remove duplicates and limit to 10 most recent descriptions
-                            unique_descriptions = list(set(existing_descriptions + [description]))
-                            descriptions = KG_SEP.join(unique_descriptions[-10:])
-                            existing_keywords = split_string_by_multi_markers(existing_edge["keywords"], [KG_SEP])
-                            # Limit keywords to 20 unique entries
-                            unique_keywords = list(set(existing_keywords + [keywords]))
-                            keywords = KG_SEP.join(unique_keywords[-20:])
-                            existing_excerpt_ids = split_string_by_multi_markers(existing_edge["excerpt_id"], [KG_SEP])
-                            excerpt_ids = KG_SEP.join(set(list(existing_excerpt_ids) + [excerpt_id]))
-                            weight = sum([weight, existing_edge["weight"]])
-                            self.graph.add_edge(source, target, description=descriptions, keywords=keywords,
-                                                weight=weight,
-                                                excerpt_id=excerpt_ids)
-                        else:
-                            self.graph.add_edge(source, target, description=description, keywords=keywords,
-                                                weight=weight,
-                                                excerpt_id=excerpt_id)
+                        try:
+                            parsed_weight = float(weight)
+                        except (TypeError, ValueError):
+                            parsed_weight = 1.0
+
+                        await self.graph.async_upsert_relationship_edge(
+                            source=source,
+                            destination=target,
+                            description=description,
+                            keywords=keywords,
+                            weight=parsed_weight,
+                            excerpt_id=excerpt_id,
+                            sep=KG_SEP,
+                        )
                         total_relationships += 1
 
-                        relationship_id = make_hash(f"{source}_{target}", prefix="ent-")
+                        relationship_id = make_hash(f"{source}_{target}", prefix="rel-")
+                        doc_relationship_ids.add(relationship_id)
                         embedding_content = f"{keywords} {source} {target} {description}"
                         embedding_contents.append(embedding_content)
                         relationships_to_upsert.append({
@@ -286,7 +459,7 @@ class SmolRag:
                         })
                 elif record_type == 'content_keywords':
                     if len(fields) >= 2:
-                        self.graph.set_field('content_keywords', fields[1])
+                        await self.graph.async_set_field('content_keywords', fields[1])
 
             # Batch all embeddings into a single API call
             if embedding_contents:
@@ -303,8 +476,15 @@ class SmolRag:
                     relation["__vector__"] = vector
                     idx += 1
 
-            await asyncio.gather(self.entities_db.upsert(entities_to_upsert), self.relationships_db.upsert(relationships_to_upsert))
+            upsert_tasks = []
+            if entities_to_upsert:
+                upsert_tasks.append(self.entities_db.upsert(entities_to_upsert))
+            if relationships_to_upsert:
+                upsert_tasks.append(self.relationships_db.upsert(relationships_to_upsert))
+            if upsert_tasks:
+                await asyncio.gather(*upsert_tasks)
 
+        await self._track_kg_provenance(doc_id, doc_entity_ids, doc_relationship_ids)
         # Saves are batched in import_documents()
         elapsed = time.time() - start_time
         logger.info(f"Extracted {total_entities} entities and {total_relationships} relationships "
@@ -341,13 +521,14 @@ class SmolRag:
         results = await self.embeddings_db.query(query=embedding_array, top_k=5, better_than_threshold=0.02)
         excerpts = [self.excerpt_kv.get_by_key(result["__id__"]) for result in results]
         excerpts = await asyncio.gather(*excerpts)
+        excerpts = [excerpt for excerpt in excerpts if excerpt is not None and "excerpt" in excerpt]
         excerpts = truncate_list_by_token_size(excerpts, get_text_for_row=lambda x: x["excerpt"], max_token_size=4000)
         return excerpts
 
     async def hybrid_kg_query(self, text):
         prompt = get_high_low_level_keywords_prompt(text)
         result = await self.rate_limited_get_completion(prompt)
-        keyword_data = extract_json_from_text(result)
+        keyword_data = extract_json_from_text(result) or {}
         logger.info("Processed high/low level keywords for hybrid KG query.")
 
         ll_dataset, ll_entity_excerpts, ll_relations = await self._get_low_level_dataset(keyword_data)
@@ -363,7 +544,7 @@ class SmolRag:
     async def local_kg_query(self, text):
         prompt = get_high_low_level_keywords_prompt(text)
         result = await self.rate_limited_get_completion(prompt)
-        keyword_data = extract_json_from_text(result)
+        keyword_data = extract_json_from_text(result) or {}
         logger.info("Processed high/low level keywords for local KG query.")
 
         ll_dataset, ll_entity_excerpts, ll_relations = await self._get_low_level_dataset(keyword_data)
@@ -377,7 +558,7 @@ class SmolRag:
     async def global_kg_query(self, text):
         prompt = get_high_low_level_keywords_prompt(text)
         result = await self.rate_limited_get_completion(prompt)
-        keyword_data = extract_json_from_text(result)
+        keyword_data = extract_json_from_text(result) or {}
         logger.info("Processed high/low level keywords for global KG query.")
 
         hl_dataset, hl_entities, hl_entity_excerpts = await self._get_high_level_dataset(keyword_data)
@@ -391,7 +572,7 @@ class SmolRag:
     async def mix_query(self, text):
         prompt = get_high_low_level_keywords_prompt(text)
         result = await self.rate_limited_get_completion(prompt)
-        keyword_data = extract_json_from_text(result)
+        keyword_data = extract_json_from_text(result) or {}
         logger.info("Processed high/low level keywords for mixed KG query.")
 
         ll_dataset, ll_entity_excerpts, ll_relations = await self._get_low_level_dataset(keyword_data)
@@ -450,7 +631,8 @@ class SmolRag:
         return context
 
     async def _get_high_level_dataset(self, keyword_data):
-        hl_keywords = keyword_data.get("high_level_keywords", [])
+        keyword_data = keyword_data if isinstance(keyword_data, dict) else {}
+        hl_keywords = self._normalize_keywords(keyword_data.get("high_level_keywords", []))
         logger.info(f"Found {len(hl_keywords)} high-level keywords.")
         hl_results = []
         if len(hl_keywords):
@@ -461,7 +643,21 @@ class SmolRag:
         hl_degrees = [self.graph.degree(r["__source__"]) + self.graph.degree(r["__target__"]) for r in hl_results]
         hl_dataset = []
         for k, n, d in zip(hl_results, hl_data, hl_degrees):
-            hl_dataset.append({"src_tgt": (k["__source__"], k["__target__"]), "rank": d, **n, })
+            if n is None:
+                logger.warning(
+                    "Skipping stale relationship vector row because graph edge is missing: %s -> %s",
+                    k.get("__source__"),
+                    k.get("__target__"),
+                )
+                continue
+            if not {"description", "keywords", "weight", "excerpt_id"}.issubset(set(n.keys())):
+                logger.warning(
+                    "Skipping relationship with incomplete graph payload for edge %s -> %s",
+                    k.get("__source__"),
+                    k.get("__target__"),
+                )
+                continue
+            hl_dataset.append({"src_tgt": (k["__source__"], k["__target__"]), "rank": d, **n})
         hl_dataset = sorted(hl_dataset, key=lambda x: (x["rank"], x["weight"]), reverse=True)
         hl_dataset = truncate_list_by_token_size(
             hl_dataset,
@@ -474,7 +670,8 @@ class SmolRag:
         return hl_dataset, hl_entities, hl_entity_excerpts
 
     async def _get_low_level_dataset(self, keyword_data):
-        ll_keywords = keyword_data.get("low_level_keywords", [])
+        keyword_data = keyword_data if isinstance(keyword_data, dict) else {}
+        ll_keywords = self._normalize_keywords(keyword_data.get("low_level_keywords", []))
         logger.info(f"Found {len(ll_keywords)} low-level keywords.")
         ll_results = []
         if len(ll_keywords):
@@ -483,10 +680,21 @@ class SmolRag:
             ll_results = await self.entities_db.query(query=ll_embedding_array, top_k=25, better_than_threshold=0.02)
         ll_data = [self.graph.get_node(r["__entity_name__"]) for r in ll_results]
         ll_degrees = [self.graph.degree(r["__entity_name__"]) for r in ll_results]
-        ll_dataset = [
-            {**n, "entity_name": k["__entity_name__"], "rank": d}
-            for k, n, d in zip(ll_results, ll_data, ll_degrees)
-        ]
+        ll_dataset = []
+        for k, n, d in zip(ll_results, ll_data, ll_degrees):
+            if n is None:
+                logger.warning(
+                    "Skipping stale entity vector row because graph node is missing: %s",
+                    k.get("__entity_name__"),
+                )
+                continue
+            if "excerpt_id" not in n:
+                logger.warning(
+                    "Skipping entity with incomplete graph payload: %s",
+                    k.get("__entity_name__"),
+                )
+                continue
+            ll_dataset.append({**n, "entity_name": k["__entity_name__"], "rank": d})
         ll_entity_excerpts = await self._get_excerpts_for_entities(ll_dataset)
         ll_relations = self._get_relationships_from_entities(ll_dataset)
         logger.info(f"Low-level dataset: {len(ll_dataset)} entities, {len(ll_relations)} relationships extracted.")
@@ -628,7 +836,8 @@ class SmolRag:
         # Todo: we need to filter out missing node data (ie no description) in case the node was added as an edge only
         data = [
             {**n, "entity_name": k, "rank": d}
-            for k, n, d in zip(entity_names, data, degrees) if 'description' in n
+            for k, n, d in zip(entity_names, data, degrees)
+            if n is not None and "description" in n
         ]
 
         # Todo: figure out how we hit a bug here with missing description
@@ -639,6 +848,16 @@ class SmolRag:
         )
         logger.info(f"Extracted {len(data)} entities from relationships.")
         return data
+
+    @staticmethod
+    def _normalize_keywords(keywords):
+        if keywords is None:
+            return []
+        if isinstance(keywords, str):
+            return [keywords] if keywords.strip() else []
+        if not isinstance(keywords, list):
+            return []
+        return [str(k) for k in keywords if str(k).strip()]
 
 
 if __name__ == '__main__':

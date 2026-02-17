@@ -22,6 +22,10 @@ class NanoVectorStore:
         async with self._lock:
             return self.db.query(query=query, top_k=top_k, better_than_threshold=better_than_threshold)
 
+    async def get(self, ids):
+        async with self._lock:
+            return self.db.get(ids)
+
     async def save(self):
         async with self._lock:
             self.db.save()

@@ -1,7 +1,7 @@
 import os
 
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
-COMPLETION_MODEL = os.getenv('COMPLETION_MODEL', 'gpt-4o-mini')
+COMPLETION_MODEL = os.getenv('COMPLETION_MODEL', 'gpt-4.1-mini')
 EMBEDDING_MODEL = os.getenv('EMBEDDING_MODEL', 'text-embedding-3-small')
 
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -14,6 +14,10 @@ INPUT_DOCS_DIR = os.path.join(ROOT_DIR, "input_docs")
 SOURCE_TO_DOC_ID_KV_PATH = os.path.join(DATA_DIR, "source_to_doc_id_map.json")
 DOC_ID_TO_SOURCE_KV_PATH = os.path.join(DATA_DIR, "doc_id_to_source_map.json")
 DOC_ID_TO_EXCERPT_KV_PATH = os.path.join(DATA_DIR, "doc_id_to_excerpt_ids.json")
+DOC_ID_TO_ENTITY_IDS_KV_PATH = os.path.join(DATA_DIR, "doc_id_to_entity_ids.json")
+DOC_ID_TO_RELATIONSHIP_IDS_KV_PATH = os.path.join(DATA_DIR, "doc_id_to_relationship_ids.json")
+ENTITY_ID_TO_DOC_IDS_KV_PATH = os.path.join(DATA_DIR, "entity_id_to_doc_ids.json")
+RELATIONSHIP_ID_TO_DOC_IDS_KV_PATH = os.path.join(DATA_DIR, "relationship_id_to_doc_ids.json")
 
 EXCERPT_KV_PATH = os.path.join(DATA_DIR, "excerpt_db.json")
 EMBEDDINGS_DB = os.path.join(DATA_DIR, "embeddings_db.json")

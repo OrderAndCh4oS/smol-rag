@@ -17,13 +17,13 @@ SmolRAG uses environment variables for core configuration settings. These can be
 | Variable | Description | Required | Default |
 |----------|-------------|----------|---------|
 | `OPENAI_API_KEY` | Your OpenAI API key | Yes | None |
-| `COMPLETION_MODEL` | OpenAI model for completions | No | gpt-3.5-turbo |
+| `COMPLETION_MODEL` | OpenAI model for completions | No | gpt-4.1-mini |
 | `EMBEDDING_MODEL` | OpenAI model for embeddings | No | text-embedding-3-small |
 
 **Example `.env` file**:
 ```
 OPENAI_API_KEY=sk-your-api-key
-COMPLETION_MODEL=gpt-4
+COMPLETION_MODEL=gpt-4.1-mini
 EMBEDDING_MODEL=text-embedding-3-large
 ```
 
@@ -125,7 +125,7 @@ SmolRAG uses OpenAI's API for language model capabilities. You can configure the
 
 **Model Selection**:
 
-- `COMPLETION_MODEL`: The model used for completions (default: gpt-3.5-turbo)
+- `COMPLETION_MODEL`: The model used for completions (default: gpt-4.1-mini)
 - `EMBEDDING_MODEL`: The model used for embeddings (default: text-embedding-3-small)
 
 **Custom LLM Interface**:
@@ -137,7 +137,7 @@ from app.openai_llm import OpenAiLlm
 from app.kv_store import JsonKvStore
 
 llm = OpenAiLlm(
-    completion_model="gpt-4",
+    completion_model="gpt-4.1-mini",
     embedding_model="text-embedding-3-large",
     query_cache_kv=JsonKvStore("custom/path/to/query_cache.json"),
     embedding_cache_kv=JsonKvStore("custom/path/to/embedding_cache.json")

@@ -87,7 +87,7 @@ The API includes robust error handling to provide clear feedback when issues occ
 - **500 Internal Server Error**: Returned when an unexpected error occurs during query processing.
   ```json
   {
-    "detail": "Error message describing the issue"
+    "detail": "Internal server error"
   }
   ```
 

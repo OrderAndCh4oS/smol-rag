@@ -441,7 +441,7 @@ dimensions = 1536
 
 # Initialize custom components
 llm = OpenAiLlm(
-    "gpt-3.5-turbo",
+    "gpt-4.1-mini",
     "text-embedding-3-small",
     query_cache_kv=JsonKvStore(query_cache_path),
     embedding_cache_kv=JsonKvStore(embedding_cache_path)
