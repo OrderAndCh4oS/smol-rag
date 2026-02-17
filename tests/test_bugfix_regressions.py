@@ -346,6 +346,78 @@ class TestRuntimeRegressions:
         assert len(await rag.entities_db.get([entity_id])) == 1
 
     @pytest.mark.asyncio
+    async def test_cleanup_entity_retains_node_when_excerpt_ids_overlap(self, temp_dir, mock_openai_llm):
+        rag = _build_rag(temp_dir=temp_dir, llm=mock_openai_llm)
+        doc_a = "doc-a"
+        doc_b = "doc-b"
+        shared_excerpt = "excerpt-shared"
+        entity_name = "EntityOverlap"
+        entity_id = make_hash(entity_name, prefix="ent-")
+
+        await rag.doc_to_entity_kv.add(doc_a, [entity_id])
+        await rag.entity_to_doc_kv.add(entity_id, [doc_a, doc_b])
+        await rag.graph.async_add_node(
+            entity_name,
+            category="Type",
+            description="Desc",
+            excerpt_id=shared_excerpt,
+        )
+        await rag.entities_db.upsert([{
+            "__id__": entity_id,
+            "__entity_name__": entity_name,
+            "__vector__": np.zeros(1536, dtype=np.float32),
+            "__inserted_at__": 0,
+        }])
+
+        removed = await rag._cleanup_entity_contributions(doc_a, {shared_excerpt})
+
+        assert removed is True
+        node = rag.graph.get_node(entity_name)
+        assert node is not None
+        assert node["excerpt_id"] == shared_excerpt
+        assert await rag.doc_to_entity_kv.get_by_key(doc_a) is None
+        assert await rag.entity_to_doc_kv.get_by_key(entity_id) == [doc_b]
+        assert len(await rag.entities_db.get([entity_id])) == 1
+
+    @pytest.mark.asyncio
+    async def test_cleanup_relationship_retains_edge_when_excerpt_ids_overlap(self, temp_dir, mock_openai_llm):
+        rag = _build_rag(temp_dir=temp_dir, llm=mock_openai_llm)
+        doc_a = "doc-a"
+        doc_b = "doc-b"
+        shared_excerpt = "excerpt-shared"
+        source = "EntityA"
+        target = "EntityB"
+        relationship_id = make_hash(f"{source}_{target}", prefix="rel-")
+
+        await rag.doc_to_relationship_kv.add(doc_a, [relationship_id])
+        await rag.relationship_to_doc_kv.add(relationship_id, [doc_a, doc_b])
+        await rag.graph.async_add_edge(
+            source,
+            target,
+            description="Rel",
+            keywords="k",
+            weight=1.0,
+            excerpt_id=shared_excerpt,
+        )
+        await rag.relationships_db.upsert([{
+            "__id__": relationship_id,
+            "__source__": source,
+            "__target__": target,
+            "__vector__": np.zeros(1536, dtype=np.float32),
+            "__inserted_at__": 0,
+        }])
+
+        removed = await rag._cleanup_relationship_contributions(doc_a, {shared_excerpt})
+
+        assert removed is True
+        edge = rag.graph.get_edge((source, target))
+        assert edge is not None
+        assert edge["excerpt_id"] == shared_excerpt
+        assert await rag.doc_to_relationship_kv.get_by_key(doc_a) is None
+        assert await rag.relationship_to_doc_kv.get_by_key(relationship_id) == [doc_b]
+        assert len(await rag.relationships_db.get([relationship_id])) == 1
+
+    @pytest.mark.asyncio
     async def test_track_kg_provenance_serializes_shared_id_updates(self, temp_dir, mock_openai_llm):
         rag = _build_rag(temp_dir=temp_dir, llm=mock_openai_llm)
         shared_entity_id = make_hash("SharedEntity", prefix="ent-")

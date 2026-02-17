@@ -136,9 +136,17 @@ class SmolRag:
 
             if node and "excerpt_id" in node:
                 pruned_excerpt_ids = self._prune_kg_ids(node.get("excerpt_id"), doc_excerpt_ids)
-                if remaining_docs and pruned_excerpt_ids:
-                    updated_node = {**node, "excerpt_id": pruned_excerpt_ids}
+                if remaining_docs:
+                    # Excerpt IDs are content-hashed and can overlap across docs.
+                    # Keep node state when other docs still reference this entity.
+                    effective_excerpt_ids = pruned_excerpt_ids or node.get("excerpt_id", "")
+                    updated_node = {**node, "excerpt_id": effective_excerpt_ids}
                     await self.graph.async_add_node(entity_name, **updated_node)
+                    if not pruned_excerpt_ids:
+                        logger.debug(
+                            "Retaining entity %s after prune because remaining docs still reference it.",
+                            entity_name,
+                        )
                 else:
                     await self.graph.async_remove_node(entity_name)
 
@@ -178,9 +186,18 @@ class SmolRag:
 
             if edge and "excerpt_id" in edge:
                 pruned_excerpt_ids = self._prune_kg_ids(edge.get("excerpt_id"), doc_excerpt_ids)
-                if remaining_docs and pruned_excerpt_ids:
-                    updated_edge = {**edge, "excerpt_id": pruned_excerpt_ids}
+                if remaining_docs:
+                    # Excerpt IDs are content-hashed and can overlap across docs.
+                    # Keep edge state when other docs still reference this relationship.
+                    effective_excerpt_ids = pruned_excerpt_ids or edge.get("excerpt_id", "")
+                    updated_edge = {**edge, "excerpt_id": effective_excerpt_ids}
                     await self.graph.async_add_edge(source, target, **updated_edge)
+                    if not pruned_excerpt_ids:
+                        logger.debug(
+                            "Retaining relationship %s -> %s after prune because remaining docs still reference it.",
+                            source,
+                            target,
+                        )
                 else:
                     await self.graph.async_remove_edge(source, target)
 
