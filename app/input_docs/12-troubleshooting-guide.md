@@ -503,12 +503,12 @@ The guide is organized by problem category, with each section describing common 
            self.cache_dir = cache_dir
            os.makedirs(cache_dir, exist_ok=True)
 
-       def get_cache_key(self, query_text, query_type):
-           key = f"{query_text}_{query_type}"
+       def get_cache_key(self, query_text, query_type, model, context):
+           key = f"{query_text}_{query_type}_{model}_{context}"
            return hashlib.md5(key.encode()).hexdigest()
 
-       def get_from_cache(self, query_text, query_type):
-           key = self.get_cache_key(query_text, query_type)
+       def get_from_cache(self, query_text, query_type, model, context):
+           key = self.get_cache_key(query_text, query_type, model, context)
            cache_file = os.path.join(self.cache_dir, f"{key}.json")
 
            if os.path.exists(cache_file):
@@ -516,8 +516,8 @@ The guide is organized by problem category, with each section describing common 
                    return json.load(f)
            return None
 
-       def save_to_cache(self, query_text, query_type, result):
-           key = self.get_cache_key(query_text, query_type)
+       def save_to_cache(self, query_text, query_type, model, context, result):
+           key = self.get_cache_key(query_text, query_type, model, context)
            cache_file = os.path.join(self.cache_dir, f"{key}.json")
 
            with open(cache_file, 'w') as f:
@@ -774,8 +774,8 @@ The guide is organized by problem category, with each section describing common 
        except Exception as e:
            # Log the error
            logger.error(f"Error processing query: {e}")
-           # Return a user-friendly error message
-           raise HTTPException(status_code=500, detail=f"An error occurred while processing your query: {str(e)}")
+           # Return a user-friendly generic message
+           raise HTTPException(status_code=500, detail="Internal server error")
    ```
 
 3. Implement request timeouts:
@@ -861,6 +861,12 @@ The guide is organized by problem category, with each section describing common 
                if file_mtime < threshold_time:
                    os.remove(file_path)
                    print(f"Removed old cache file: {file_path}")
+   ```
+
+3. If index or cache behavior changes, run a full rebuild:
+   ```bash
+   # Wipe cache/index files and fully rescan app/input_docs
+   python rebuild_rag.py
    ```
 
 3. Monitor and optimize memory usage:

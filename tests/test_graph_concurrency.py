@@ -224,6 +224,25 @@ class TestGraphStoreConcurrency:
         assert node is not None, "Node was corrupted"
         assert "description" in node, "Node attributes were corrupted"
 
+    @pytest.mark.asyncio
+    async def test_atomic_entity_upsert_keeps_all_excerpt_ids(self, graph_store):
+        """Concurrent upserts to one entity should not drop contributions."""
+        async def upsert(i):
+            await graph_store.async_upsert_entity_node(
+                name="SharedEntity",
+                category="Type",
+                description=f"Description {i}",
+                excerpt_id=f"excerpt-{i}",
+                sep=":|:",
+            )
+
+        await asyncio.gather(*(upsert(i) for i in range(20)))
+
+        node = graph_store.get_node("SharedEntity")
+        assert node is not None
+        excerpt_ids = set(node["excerpt_id"].split(":|:"))
+        assert len(excerpt_ids) == 20
+
     @pytest.mark.performance
     @pytest.mark.asyncio
     async def test_concurrent_operations_performance(self, graph_store):

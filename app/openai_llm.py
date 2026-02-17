@@ -1,3 +1,4 @@
+import json
 from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
@@ -18,11 +19,27 @@ class OpenAiLlm:
         """
         Initializes the OpenAiLlm instance with specified models and caches.
         """
-        self.client = openai_api_key or OpenAI(api_key=OPENAI_API_KEY)
+        api_key = openai_api_key or OPENAI_API_KEY
+        self.client = OpenAI(api_key=api_key)
         self.query_cache_kv = query_cache_kv or JsonKvStore(QUERY_CACHE_KV_PATH)
         self.embedding_cache_kv = embedding_cache_kv or JsonKvStore(EMBEDDING_CACHE_KV_PATH)
         self.completion_model = completion_model or COMPLETION_MODEL
         self.embedding_model = embedding_model or EMBEDDING_MODEL
+
+    def _get_query_cache_key(self, query: str, model: str, context: str) -> str:
+        key_payload = {
+            "query": query,
+            "model": model,
+            "context": context,
+        }
+        return make_hash(json.dumps(key_payload, sort_keys=True), "qry-")
+
+    def _get_embedding_cache_key(self, content: Any, model: str) -> str:
+        key_payload = {
+            "content": str(content),
+            "model": model,
+        }
+        return make_hash(json.dumps(key_payload, sort_keys=True), "emb-")
 
     async def get_completion(self, query: str, model: Optional[str] = None, context: str = "",
                              use_cache: bool = True) -> str:
@@ -36,7 +53,7 @@ class OpenAiLlm:
         :return: The completion result.
         """
         model = model or self.completion_model
-        query_hash = make_hash(query, 'qry-')
+        query_hash = self._get_query_cache_key(query=query, model=model, context=context)
         if use_cache and await self.query_cache_kv.has(query_hash):
             logger.info("Query cache hit")
             cache_data = await self.query_cache_kv.get_by_key(query_hash)
@@ -57,7 +74,12 @@ class OpenAiLlm:
             logger.error(f"Error getting completion: {e}")
             raise
 
-        await self.query_cache_kv.add(query_hash, {"query": query, "result": result})
+        await self.query_cache_kv.add(query_hash, {
+            "query": query,
+            "model": model,
+            "context": context,
+            "result": result
+        })
         await self.query_cache_kv.save()
 
         return result
@@ -101,7 +123,7 @@ class OpenAiLlm:
         :return: The embedding vector.
         """
         model = model or self.embedding_model
-        content_hash = make_hash(str(content), 'emb-')
+        content_hash = self._get_embedding_cache_key(content, model)
 
         if await self.embedding_cache_kv.has(content_hash):
             logger.info("Embedding cache hit")
@@ -139,7 +161,7 @@ class OpenAiLlm:
         uncached_contents = []
 
         for i, content in enumerate(contents):
-            content_hash = make_hash(str(content), 'emb-')
+            content_hash = self._get_embedding_cache_key(content, model)
             if await self.embedding_cache_kv.has(content_hash):
                 logger.debug(f"Embedding cache hit for item {i}")
                 embeddings[i] = await self.embedding_cache_kv.get_by_key(content_hash)

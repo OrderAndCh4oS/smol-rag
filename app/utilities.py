@@ -26,8 +26,8 @@ def write_file(file_path, content):
 
 
 def read_file(file_path):
-    f = open(file_path, "r")
-    return f.read()
+    with open(file_path, "r") as f:
+        return f.read()
 
 
 def delete_all_files(directory):
@@ -128,7 +128,11 @@ def truncate_list_by_token_size(data_list, get_text_for_row, max_token_size=4000
 def get_encoded_tokens(text, model=COMPLETION_MODEL):
     global tiktoken_encoders
     if not model in tiktoken_encoders:
-        tiktoken_encoders[model] = tiktoken.encoding_for_model(model)
+        try:
+            tiktoken_encoders[model] = tiktoken.encoding_for_model(model)
+        except KeyError:
+            # Keep compatibility with newer model ids not yet known by local tiktoken.
+            tiktoken_encoders[model] = tiktoken.get_encoding("o200k_base")
 
     return tiktoken_encoders[model].encode(text)
 

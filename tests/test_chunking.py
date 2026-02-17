@@ -1,5 +1,7 @@
 import pytest
 
+pytest.importorskip("nltk")
+
 from app.chunking import preserve_markdown_code_excerpts
 
 
@@ -53,7 +55,7 @@ def test_overlap():
 def test_extremely_long_sentence():
     sentence = "a" * 300
     excerpts = preserve_markdown_code_excerpts(sentence, n=100)
-    # function should hard‑split the sentence
+    # function should hard-split the sentence
     assert all(len(ex) <= 100 for ex in excerpts)
 
 

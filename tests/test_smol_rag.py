@@ -8,6 +8,8 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 import numpy as np
 
+pytest.importorskip("nltk")
+
 from app.smol_rag import SmolRag
 
 
@@ -426,6 +428,9 @@ class TestSmolRagEdgeCases:
     async def test_empty_document_import(self, temp_dir, mock_openai_llm):
         """Test importing an empty document."""
         import os
+        from app.graph_store import NetworkXGraphStore
+        from app.vector_store import NanoVectorStore
+        from app.kv_store import JsonKvStore
 
         doc_path = os.path.join(temp_dir, "empty.md")
         with open(doc_path, 'w') as f:
@@ -433,43 +438,44 @@ class TestSmolRagEdgeCases:
 
         rag = SmolRag(
             llm=mock_openai_llm,
-            embeddings_db=os.path.join(temp_dir, "embeddings"),
-            entities_db=os.path.join(temp_dir, "entities"),
-            relationships_db=os.path.join(temp_dir, "relationships"),
-            source_to_doc_kv=os.path.join(temp_dir, "source_to_doc.json"),
-            doc_to_source_kv=os.path.join(temp_dir, "doc_to_source.json"),
-            doc_to_excerpt_kv=os.path.join(temp_dir, "doc_to_excerpt.json"),
-            excerpt_kv=os.path.join(temp_dir, "excerpt.json"),
-            graph_db=os.path.join(temp_dir, "graph.graphml")
+            embeddings_db=NanoVectorStore(os.path.join(temp_dir, "embeddings"), dimensions=1536),
+            entities_db=NanoVectorStore(os.path.join(temp_dir, "entities"), dimensions=1536),
+            relationships_db=NanoVectorStore(os.path.join(temp_dir, "relationships"), dimensions=1536),
+            source_to_doc_kv=JsonKvStore(os.path.join(temp_dir, "source_to_doc.json")),
+            doc_to_source_kv=JsonKvStore(os.path.join(temp_dir, "doc_to_source.json")),
+            doc_to_excerpt_kv=JsonKvStore(os.path.join(temp_dir, "doc_to_excerpt.json")),
+            excerpt_kv=JsonKvStore(os.path.join(temp_dir, "excerpt.json")),
+            graph_db=NetworkXGraphStore(os.path.join(temp_dir, "graph.graphml"))
         )
 
-        try:
-            await rag.import_document(doc_path)
-            # Should handle gracefully
-        except Exception as e:
-            print(f"Error importing empty document: {e}")
+        with patch("app.smol_rag.get_docs", return_value=[doc_path]):
+            await rag.import_documents()
+
+        doc_id = await rag.source_to_doc_kv.get_by_key(doc_path)
+        assert doc_id is not None
+        excerpt_ids = await rag.doc_to_excerpt_kv.get_by_key(doc_id)
+        assert excerpt_ids == []
 
     @pytest.mark.asyncio
     @pytest.mark.integration
     async def test_query_empty_database(self, temp_dir, mock_openai_llm):
         """Test querying when no documents are imported."""
         import os
+        from app.graph_store import NetworkXGraphStore
+        from app.vector_store import NanoVectorStore
+        from app.kv_store import JsonKvStore
 
         rag = SmolRag(
             llm=mock_openai_llm,
-            embeddings_db=os.path.join(temp_dir, "embeddings"),
-            entities_db=os.path.join(temp_dir, "entities"),
-            relationships_db=os.path.join(temp_dir, "relationships"),
-            source_to_doc_kv=os.path.join(temp_dir, "source_to_doc.json"),
-            doc_to_source_kv=os.path.join(temp_dir, "doc_to_source.json"),
-            doc_to_excerpt_kv=os.path.join(temp_dir, "doc_to_excerpt.json"),
-            excerpt_kv=os.path.join(temp_dir, "excerpt.json"),
-            graph_db=os.path.join(temp_dir, "graph.graphml")
+            embeddings_db=NanoVectorStore(os.path.join(temp_dir, "embeddings"), dimensions=1536),
+            entities_db=NanoVectorStore(os.path.join(temp_dir, "entities"), dimensions=1536),
+            relationships_db=NanoVectorStore(os.path.join(temp_dir, "relationships"), dimensions=1536),
+            source_to_doc_kv=JsonKvStore(os.path.join(temp_dir, "source_to_doc.json")),
+            doc_to_source_kv=JsonKvStore(os.path.join(temp_dir, "doc_to_source.json")),
+            doc_to_excerpt_kv=JsonKvStore(os.path.join(temp_dir, "doc_to_excerpt.json")),
+            excerpt_kv=JsonKvStore(os.path.join(temp_dir, "excerpt.json")),
+            graph_db=NetworkXGraphStore(os.path.join(temp_dir, "graph.graphml"))
         )
 
-        try:
-            result = await rag.query("What is Python?")
-            # Should return empty results or handle gracefully
-            assert result is not None
-        except Exception as e:
-            print(f"Error querying empty database: {e}")
+        result = await rag.query("What is Python?")
+        assert result is not None

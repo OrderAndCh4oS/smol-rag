@@ -101,13 +101,13 @@ class QueryCache:
         self.cache_dir = cache_dir
         os.makedirs(cache_dir, exist_ok=True)
     
-    def get_cache_key(self, query_text, query_type):
-        # Create a unique key based on the query text and type
-        key = f"{query_text}_{query_type}"
+    def get_cache_key(self, query_text, query_type, model, context):
+        # Include model and context to avoid collisions across query modes.
+        key = f"{query_text}_{query_type}_{model}_{context}"
         return hashlib.md5(key.encode()).hexdigest()
     
-    def get_from_cache(self, query_text, query_type):
-        key = self.get_cache_key(query_text, query_type)
+    def get_from_cache(self, query_text, query_type, model, context):
+        key = self.get_cache_key(query_text, query_type, model, context)
         cache_file = os.path.join(self.cache_dir, f"{key}.json")
         
         if os.path.exists(cache_file):
@@ -115,8 +115,8 @@ class QueryCache:
                 return json.load(f)
         return None
     
-    def save_to_cache(self, query_text, query_type, result):
-        key = self.get_cache_key(query_text, query_type)
+    def save_to_cache(self, query_text, query_type, model, context, result):
+        key = self.get_cache_key(query_text, query_type, model, context)
         cache_file = os.path.join(self.cache_dir, f"{key}.json")
         
         with open(cache_file, 'w') as f:
@@ -126,16 +126,18 @@ class QueryCache:
 cache = QueryCache("app/cache/query_cache")
 query_text = "What is SmolRAG?"
 query_type = "standard"
+model = "gpt-4.1-mini"
+context = "vector"
 
 # Check cache first
-cached_result = cache.get_from_cache(query_text, query_type)
+cached_result = cache.get_from_cache(query_text, query_type, model, context)
 if cached_result:
     print("Using cached result")
     result = cached_result
 else:
     # Process query and cache result
     result = rag.query(query_text)
-    cache.save_to_cache(query_text, query_type, result)
+    cache.save_to_cache(query_text, query_type, model, context, result)
 ```
 
 ---

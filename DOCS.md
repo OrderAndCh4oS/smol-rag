@@ -118,7 +118,7 @@ SmolRAG requires the following environment variables:
 | Variable | Description | Required | Default |
 |----------|-------------|----------|---------|
 | `OPENAI_API_KEY` | Your OpenAI API key | Yes | None |
-| `COMPLETION_MODEL` | OpenAI model for completions | No | gpt-3.5-turbo |
+| `COMPLETION_MODEL` | OpenAI model for completions | No | gpt-4.1-mini |
 | `EMBEDDING_MODEL` | OpenAI model for embeddings | No | text-embedding-3-small |
 
 You can set these variables in a `.env` file in the project root.
@@ -165,6 +165,18 @@ asyncio.run(import_docs())
 
 # Or in an existing async context:
 # await rag.import_documents()
+```
+
+### Full Rebuild (Wipe + Rescan)
+
+Use the rebuild script when you want to reset cache/index state and fully rescan source documents:
+
+```bash
+# Recommended after cache/index behavior changes
+python rebuild_rag.py
+
+# Keep existing state and only run import
+python rebuild_rag.py --keep-existing
 ```
 
 ### Querying Documents
@@ -427,7 +439,7 @@ minimal-light-rag/
 
 2. **Caching**:
    - Query and embedding results are cached to improve performance and reduce API costs
-   - Clear caches in `app/cache/` if you need to force recomputation
+   - If you need a clean state, run `python rebuild_rag.py` to wipe cache/index files and rescan input docs
    - Cache implementations are in `app/kv_store.py`
 
 3. **API Testing**:
