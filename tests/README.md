@@ -1,4 +1,4 @@
-# SmolRAG
+# SmolRAG Notes
 
 This test suite provides comprehensive coverage for the SmolRAG implementation, with a focus on identifying and measuring performance bottlenecks before implementing optimizations.
 
