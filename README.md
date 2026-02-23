@@ -1,5 +1,7 @@
 ### SmolRAG
 
+SmolRAG is a lightweight retrieval‑augmented generation system inspired by LightRAG, focused on fast, up‑to‑date querying of your own documents.
+
 Documents are split into ~2,000‑character overlapping chunks that keep Markdown code blocks intact. Long paragraphs are
 shortened at sentence boundaries so words never split. Each chunk is summarised to raise context quality before being
 embedded in NanoVectorDB, and its entities and relationships are stored in a local NetworkX knowledge graph for
