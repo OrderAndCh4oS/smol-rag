@@ -1,4 +1,4 @@
-### SmolRAG
+### SmolRAG Readme
 
 SmolRAG is a lightweight retrieval‑augmented generation system inspired by LightRAG, focused on fast, up‑to‑date querying of your own documents.
 
