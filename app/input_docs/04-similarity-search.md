@@ -1,4 +1,4 @@
-Title: SmolRAG Similarity Search
+**Title: SmolRAG Similarity Search**
 
 ---
 
