@@ -1,4 +1,4 @@
-**Title: SmolRAG Knowledge Graphs**
+Title: SmolRAG Knowledge Graphs
 
 ---
 
