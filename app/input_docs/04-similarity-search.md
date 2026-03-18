@@ -6,7 +6,7 @@
 
 Similarity search is a core capability of SmolRAG that enables the system to find relevant document excerpts based on semantic similarity to a query. Unlike traditional keyword search, which relies on exact word matches, similarity search uses vector embeddings to capture the meaning and context of both queries and documents, allowing for more natural and effective information retrieval.
 
-This approach allows SmolRAG to understand the intent behind queries and find relevant information even when the exact terminology differs between the query and the documents. Similarity search forms the foundation of SmolRAG's vector search query type and contributes to other query types as well.
+This approach allows SmolRAG to understand the intent behind queries and find relevant information even when the exact terminology differs between the query and the documents. Similarity search underpins SmolRAG's vector search query type and contributes to other query types as well.
 
 ---
 
