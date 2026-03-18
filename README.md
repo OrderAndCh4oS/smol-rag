@@ -2,14 +2,9 @@
 
 SmolRAG is a lightweight retrieval‑augmented generation system inspired by LightRAG, focused on fast, up‑to‑date querying of your own documents.
 
-Documents are split into ~2,000‑character overlapping chunks that keep Markdown code blocks intact. Long paragraphs are
-shortened at sentence boundaries so words never split. Each chunk is summarised to raise context quality before being
-embedded in NanoVectorDB, and its entities and relationships are stored in a local NetworkX knowledge graph for
-structured querying.
+Documents are split into ~2,000‑character overlapping chunks that preserve Markdown code blocks. Long paragraphs are shortened at sentence boundaries so words never split. Each chunk is summarised to raise context quality before being embedded in NanoVectorDB, and its entities and relationships are stored in a local NetworkX knowledge graph for structured querying.
 
-Change detection is automatic. Every file’s full content is hashed. If the path already exists but the hash changes, the
-old embeddings and graph entries are deleted and the new content is reingested, so answers always reflect the latest
-versions of the documents.
+Change detection is automatic. Every file’s full content is hashed. If the path already exists but the hash changes, the old embeddings and graph entries are deleted and the new content is re-ingested, so answers always reflect the latest versions of the documents.
 
 ## Docs
 
@@ -17,8 +12,7 @@ For setup instructions and general guidance, please refer to [SmolRAG Docs](DOCS
 
 ### Example RAG Documentation
 
-Additional AI-generated documentation for SmolRag can be found in `app/input_docs`, they've been ingested into SmolRag 
-for to demo purposes. 
+Additional AI-generated documentation for SmolRag can be found in `app/input_docs`, they've been ingested into SmolRag for to demo purposes. 
 
 If you want to learn more about SmolRAG's abilities and internal workings, you can run it and ask some questions. 
 
